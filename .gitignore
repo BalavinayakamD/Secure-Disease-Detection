@@ -1,0 +1,111 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environments
+venv/
+ENV/
+env/
+.venv
+
+# IDE & Editor Files
+.vscode/
+.antigravity/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+*.ipynb
+
+# Environment Variables (NEVER commit secrets)
+.env
+.env.local
+
+# Data Files (TOO LARGE FOR GITHUB)
+# Ignore all CSV files in data folders
+
+data/raw/*.csv
+data/raw/*.zip
+data/raw/*.tar.gz
+data/processed/*.csv
+data/processed/*.pkl
+data/processed/*.parquet
+
+# keep .gitkeep files to track empty directories
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+
+# Outputs (TOO LARGE FOR GITHUB)
+outputs/graphs/*.png
+outputs/graphs/*.pdf
+outputs/graphs/*.jpg
+outputs/graphs/*.svg
+outputs/logs/*.log
+outputs/logs/*.txt
+outputs/models/*.pth
+outputs/models/*.pt
+outputs/models/*.onnx
+
+# keep .gitkeep files
+!outputs/graphs/.gitkeep
+!outputs/logs/.gitkeep
+!outputs/models/.gitkeep
+
+# Operating System Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# Temporary Files
+*.tmp
+*.bak
+*.swp
+*~
+.cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Logs
+*.log
+logs/
+
+# Ray (Flower's backend)
+/tmp/ray/
+ray_results/
+
+# Miscellaneous
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+wandb/
+mlruns/
