@@ -109,3 +109,4 @@ ray_results/
 .hypothesis/
 wandb/
 mlruns/
+docs/

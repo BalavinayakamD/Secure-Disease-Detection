@@ -1,0 +1,52 @@
+data:
+  raw_path: "data/raw/cardio_train.csv"
+  processed_dir: "data/processed/"
+
+  num_clients: 3
+
+  test_split: 0.15
+
+  dirichlet_alpha: 1.0
+  min_samples_per_class: 20
+
+  random_seed: 42
+
+model:
+  input_dim: 11
+  hidden_dims: [64, 32]
+  dropout: 0.2
+
+  bn_layers:
+    - "bn1"
+    - "bn2"
+
+training:
+  local_epochs: 2
+  batch_size: 64
+
+  learning_rate: 0.001
+  optimizer: "adam"
+  loss_fn: "bce"
+
+federated:
+  num_rounds: 10
+
+  strategy: "at_fedbn"
+
+  beta: 0.7
+
+  trust_method: "cosine_update"
+  trust_floor: 0.0
+  trust_epsilon: 1.0e-8
+
+privacy:
+  enabled: true
+
+  clip_norm: 1.0
+
+  noise_scale: 0.01
+
+outputs:
+  graphs_dir: "outputs/graphs/"
+  logs_dir: "outputs/logs/"
+  models_dir: "outputs/models/"
