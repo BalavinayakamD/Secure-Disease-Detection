@@ -110,3 +110,7 @@ ray_results/
 wandb/
 mlruns/
 docs/
+.claude/
+.claude
+.claude.json
+*.claude.log
