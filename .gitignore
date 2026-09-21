@@ -70,8 +70,13 @@ outputs/models/*.pth
 outputs/models/*.pt
 outputs/models/*.onnx
 
+# Results JSON is small and SHOULD be committed -- only ignore stray files
+!outputs/results/
+!outputs/results/*.json
+
 # keep .gitkeep files
 !outputs/graphs/.gitkeep
+!outputs/results/.gitkeep
 !outputs/logs/.gitkeep
 !outputs/models/.gitkeep
 
@@ -110,3 +115,7 @@ ray_results/
 wandb/
 mlruns/
 docs/
+.claude/
+.claude
+.claude.json
+*.claude.log
