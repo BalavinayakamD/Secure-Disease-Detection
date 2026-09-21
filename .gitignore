@@ -54,6 +54,7 @@ data/raw/*.tar.gz
 data/processed/*.csv
 data/processed/*.pkl
 data/processed/*.parquet
+data/processed/*.npy
 
 # keep .gitkeep files to track empty directories
 !data/raw/.gitkeep
@@ -69,6 +70,7 @@ outputs/logs/*.txt
 outputs/models/*.pth
 outputs/models/*.pt
 outputs/models/*.onnx
+outputs/models/*.pkl
 
 # keep .gitkeep files
 !outputs/graphs/.gitkeep
@@ -104,6 +106,7 @@ logs/
 ray_results/
 
 # Miscellaneous
+Architecture-and-solution.txt
 .mypy_cache/
 .ruff_cache/
 .hypothesis/
