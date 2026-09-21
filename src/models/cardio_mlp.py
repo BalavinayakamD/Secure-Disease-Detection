@@ -1,82 +1,74 @@
-# pyrefly: ignore [missing-import]
+"""
+CardioMLP: the shared model for every AT-FedBN experiment.
+
+The BatchNorm modules are deliberately named `bn1` / `bn2` to match
+config.yaml:model.bn_layers. FedBN keeps exactly those parameters local,
+so the names are part of the contract, not cosmetic.
+"""
+
 import torch
-# pyrefly: ignore [missing-import]
 import torch.nn as nn
-from typing import List, Optional
 
 
 class CardioMLP(nn.Module):
     """
-    3-Layer Multi-Layer Perceptron (MLP) for Tabular Disease Classification.
-    Configured for FedBN (Federated Batch Normalization) where BatchNorm layers
-    (bn1, bn2) remain strictly local to client hospitals, and Linear layers
-    (fc1, fc2, fc3) are aggregated globally.
+    3-layer MLP for binary cardiovascular disease classification.
+
+        Linear -> BatchNorm1d -> ReLU -> Dropout
+        Linear -> BatchNorm1d -> ReLU -> Dropout
+        Linear -> raw logit
+
+    The output is an unactivated logit, trained with BCEWithLogitsLoss for
+    numerical stability. Apply torch.sigmoid() at evaluation time.
     """
 
-    def __init__(
-        self,
-        input_dim: int = 11,
-        hidden_dims: Optional[List[int]] = None,
-        dropout: float = 0.2,
-        bn_layers: Optional[List[str]] = None,
-    ):
+    def __init__(self, input_dim=11, hidden_dims=(64, 32), dropout=0.2):
         super().__init__()
-        if hidden_dims is None:
-            hidden_dims = [64, 32]
-        if bn_layers is None:
-            bn_layers = ["bn1", "bn2"]
+        h1, h2 = hidden_dims
 
-        self.input_dim = input_dim
-        self.hidden_dims = hidden_dims
-        self.bn_layer_names = list(bn_layers)
+        self.fc1 = nn.Linear(input_dim, h1)
+        self.bn1 = nn.BatchNorm1d(h1)
+        self.fc2 = nn.Linear(h1, h2)
+        self.bn2 = nn.BatchNorm1d(h2)
+        self.fc3 = nn.Linear(h2, 1)
 
-        # Layer 1: Linear -> BatchNorm1d -> ReLU -> Dropout
-        self.fc1 = nn.Linear(input_dim, hidden_dims[0])
-        self.bn1 = nn.BatchNorm1d(hidden_dims[0])
-        self.relu1 = nn.ReLU()
-        self.drop1 = nn.Dropout(dropout) if dropout > 0.0 else nn.Identity()
+        self.relu = nn.ReLU()
+        self.dropout = nn.Dropout(dropout)
 
-        # Layer 2: Linear -> BatchNorm1d -> ReLU -> Dropout
-        self.fc2 = nn.Linear(hidden_dims[0], hidden_dims[1])
-        self.bn2 = nn.BatchNorm1d(hidden_dims[1])
-        self.relu2 = nn.ReLU()
-        self.drop2 = nn.Dropout(dropout) if dropout > 0.0 else nn.Identity()
-
-        # Layer 3: Linear (Output) -> Sigmoid
-        self.fc3 = nn.Linear(hidden_dims[1], 1)
-        self.sigmoid = nn.Sigmoid()
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass returning probability in [0, 1].
-        """
-        x = self.drop1(self.relu1(self.bn1(self.fc1(x))))
-        x = self.drop2(self.relu2(self.bn2(self.fc2(x))))
-        x = self.sigmoid(self.fc3(x))
-        return x
-
-    def forward_logits(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass returning raw logits (for numerical stability with BCEWithLogitsLoss).
-        """
-        x = self.drop1(self.relu1(self.bn1(self.fc1(x))))
-        x = self.drop2(self.relu2(self.bn2(self.fc2(x))))
+    def forward(self, x):
+        x = self.dropout(self.relu(self.bn1(self.fc1(x))))
+        x = self.dropout(self.relu(self.bn2(self.fc2(x))))
         return self.fc3(x)
 
-    def is_bn_param(self, param_name: str) -> bool:
+    @staticmethod
+    def bn_keys(state_dict, bn_layers=('bn1', 'bn2')):
         """
-        Determines if a state_dict key belongs to a local BatchNorm layer.
+        State-dict keys that FedBN must keep local (weights, biases, running
+        stats and num_batches_tracked of every BN layer).
         """
-        return any(bn_name in param_name for bn_name in self.bn_layer_names)
+        return [k for k in state_dict if k.split('.')[0] in bn_layers]
 
-    def get_shared_param_names(self) -> List[str]:
-        """
-        Returns the ordered list of parameter names shared with the FL server (non-BN layers).
-        """
-        return [name for name, _ in self.named_parameters() if not self.is_bn_param(name)]
+    @staticmethod
+    def shared_keys(state_dict, bn_layers=('bn1', 'bn2')):
+        """State-dict keys that get aggregated on the server."""
+        return [k for k in state_dict if k.split('.')[0] not in bn_layers]
 
-    def get_local_bn_param_names(self) -> List[str]:
-        """
-        Returns all parameter and buffer names that stay strictly local (BN layers).
-        """
-        return [name for name in self.state_dict().keys() if self.is_bn_param(name)]
+
+def build_from_config(cfg):
+    """Instantiate a CardioMLP from a parsed config.yaml dict."""
+    m = cfg['model']
+    return CardioMLP(
+        input_dim=m['input_dim'],
+        hidden_dims=tuple(m['hidden_dims']),
+        dropout=m['dropout'],
+    )
+
+
+if __name__ == '__main__':
+    model = CardioMLP()
+    out = model(torch.randn(8, 11))
+    print(model)
+    print(f'\nOutput shape: {tuple(out.shape)}')
+    sd = model.state_dict()
+    print(f'Local (BN) keys:  {CardioMLP.bn_keys(sd)}')
+    print(f'Shared keys:      {CardioMLP.shared_keys(sd)}')

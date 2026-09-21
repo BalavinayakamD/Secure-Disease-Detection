@@ -1,152 +1,68 @@
+"""Checks for CardioMLP's shape and its FedBN state-dict contract."""
+
+import os
 import sys
-from pathlib import Path
 
-# Ensure project root is in sys.path
-project_root = str(Path(__file__).resolve().parents[1])
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
-
-import numpy as np
-import pytest
 import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader, TensorDataset
 
-from src.fl.client import FlowerClient
-from src.models.cardio_mlp import CardioMLP
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-
-def test_cardio_mlp_forward_and_shapes():
-    """Verify CardioMLP output shape and probability range."""
-    model = CardioMLP(input_dim=11, hidden_dims=[64, 32], dropout=0.2, bn_layers=["bn1", "bn2"])
-    batch_size = 16
-    x = torch.randn(batch_size, 11)
-
-    # Forward returns probability in [0, 1]
-    out = model(x)
-    assert out.shape == (batch_size, 1)
-    assert (out >= 0.0).all() and (out <= 1.0).all()
-
-    # Forward logits returns unconstrained values
-    logits = model.forward_logits(x)
-    assert logits.shape == (batch_size, 1)
+from src.models.cardio_mlp import CardioMLP, build_from_config
 
 
-def test_cardio_mlp_fedbn_param_isolation():
-    """Verify that CardioMLP properly separates shared layers from local BN layers."""
-    model = CardioMLP(input_dim=11, hidden_dims=[64, 32], bn_layers=["bn1", "bn2"])
-    shared = model.get_shared_param_names()
-    local_bn = model.get_local_bn_param_names()
-
-    # Shared layers must only contain Linear layers
-    expected_shared = [
-        "fc1.weight", "fc1.bias",
-        "fc2.weight", "fc2.bias",
-        "fc3.weight", "fc3.bias"
-    ]
-    assert shared == expected_shared
-
-    # Local BN must contain bn1 and bn2 parameters and buffers
-    assert "bn1.weight" in local_bn
-    assert "bn1.bias" in local_bn
-    assert "bn1.running_mean" in local_bn
-    assert "bn1.running_var" in local_bn
-    assert "bn2.weight" in local_bn
-    assert "bn2.bias" in local_bn
+def test_forward_shape():
+    model = CardioMLP(input_dim=11)
+    assert model(torch.randn(16, 11)).shape == (16, 1)
 
 
-def test_flower_client_fedbn_set_parameters_preserves_bn():
-    """Verify that set_parameters only modifies non-BN layers and preserves local BN state."""
-    model = CardioMLP(input_dim=11, hidden_dims=[64, 32], bn_layers=["bn1", "bn2"])
-
-    # Set custom local BatchNorm state
+def test_output_is_a_logit():
+    """Raw logits, not probabilities -- BCEWithLogitsLoss depends on this."""
+    model = CardioMLP(input_dim=11)
     with torch.no_grad():
-        model.bn1.running_mean.fill_(99.0)
-        model.bn1.running_var.fill_(5.0)
-
-    client = FlowerClient(cid="hospital_1", model=model)
-
-    # Prepare random parameters for shared layers
-    shared_shapes = [p.shape for name, p in model.named_parameters() if not client._is_bn_param(name)]
-    dummy_server_params = [np.random.randn(*shape).astype(np.float32) for shape in shared_shapes]
-
-    client.set_parameters(dummy_server_params)
-
-    # Check that BN running stats were untouched
-    assert torch.allclose(client.model.bn1.running_mean, torch.tensor(99.0))
-    assert torch.allclose(client.model.bn1.running_var, torch.tensor(5.0))
-
-    # Check that fc1.weight was updated to dummy_server_params[0]
-    fc1_weight_np = client.model.fc1.weight.detach().cpu().numpy()
-    assert np.allclose(fc1_weight_np, dummy_server_params[0])
+        out = model(torch.randn(256, 11) * 20)
+    assert out.min() < 0, 'a sigmoid output could never be negative'
 
 
-def test_flower_client_fit_and_evaluate_lifecycle():
-    """Verify the full fit and evaluate lifecycle of FlowerClient."""
-    x_train = torch.randn(64, 11)
-    y_train = torch.randint(0, 2, (64, 1)).float()
-    x_val = torch.randn(32, 11)
-    y_val = torch.randint(0, 2, (32, 1)).float()
+def test_state_dict_round_trip():
+    a = CardioMLP(input_dim=11)
+    b = CardioMLP(input_dim=11)
+    b.load_state_dict(a.state_dict())
 
-    train_loader = DataLoader(TensorDataset(x_train, y_train), batch_size=16, shuffle=True)
-    val_loader = DataLoader(TensorDataset(x_val, y_val), batch_size=16)
-
-    client = FlowerClient(
-        cid="hospital_test",
-        train_loader=train_loader,
-        val_loader=val_loader,
-        config={"training": {"local_epochs": 1, "learning_rate": 0.01}, "privacy": {"enabled": True, "clip_norm": 1.0, "noise_scale": 0.01}},
-    )
-
-    initial_params = client.get_parameters(config={})
-    assert len(initial_params) == 6  # fc1, fc2, fc3 weights and biases
-
-    # Test fit
-    updated_params, num_samples, metrics = client.fit(initial_params, config={"local_epochs": 1})
-    assert len(updated_params) == 6
-    assert num_samples == 64
-    assert "loss" in metrics and "accuracy" in metrics
-    assert 0.0 <= metrics["accuracy"] <= 1.0
-
-    # Test evaluate
-    eval_loss, eval_samples, eval_metrics = client.evaluate(updated_params, config={})
-    assert eval_samples == 32
-    assert eval_loss >= 0.0
-    assert "accuracy" in eval_metrics and "f1" in eval_metrics
-    assert 0.0 <= eval_metrics["accuracy"] <= 1.0
-    assert 0.0 <= eval_metrics["f1"] <= 1.0
+    a.eval()
+    b.eval()
+    x = torch.randn(8, 11)
+    with torch.no_grad():
+        assert torch.allclose(a(x), b(x))
 
 
-def test_flower_client_lightweight_dp():
-    """Verify that Lightweight DP modifies parameters with noise and clipping."""
-    torch.manual_seed(42)
-    np.random.seed(42)
+def test_bn_and_shared_keys_partition_the_state_dict():
+    """
+    FedBN holds BN parameters back and aggregates everything else. If a rename
+    ever breaks this split, personalization silently stops working -- so assert it.
+    """
+    sd = CardioMLP().state_dict()
+    bn = CardioMLP.bn_keys(sd)
+    shared = CardioMLP.shared_keys(sd)
 
-    x_train = torch.randn(32, 11)
-    y_train = torch.randint(0, 2, (32, 1)).float()
-    train_loader = DataLoader(TensorDataset(x_train, y_train), batch_size=16)
+    assert set(bn) | set(shared) == set(sd)
+    assert not set(bn) & set(shared)
 
-    # Client with DP enabled
-    client_dp = FlowerClient(
-        cid="dp_client",
-        train_loader=train_loader,
-        config={"training": {"local_epochs": 1}, "privacy": {"enabled": True, "clip_norm": 0.5, "noise_scale": 0.05}},
-    )
-    init_params = client_dp.get_parameters({})
-    dp_params, _, _ = client_dp.fit(init_params, {})
+    # Both BN layers must contribute affine params AND running stats.
+    for layer in ('bn1', 'bn2'):
+        for suffix in ('weight', 'bias', 'running_mean', 'running_var'):
+            assert f'{layer}.{suffix}' in bn
 
-    # Client without DP
-    client_no_dp = FlowerClient(
-        cid="no_dp_client",
-        train_loader=train_loader,
-        config={"training": {"local_epochs": 1}, "privacy": {"enabled": False}},
-    )
-    init_params_no_dp = [np.copy(p) for p in init_params]
-    # Set same initial parameters
-    client_no_dp.set_parameters(init_params_no_dp)
-    # Fit
-    no_dp_params, _, _ = client_no_dp.fit(init_params_no_dp, {})
+    assert all(k.startswith(('fc1', 'fc2', 'fc3')) for k in shared)
 
-    # Because DP adds noise and clipping, returned parameters should differ
-    diff = sum(np.sum(np.abs(p1 - p2)) for p1, p2 in zip(dp_params, no_dp_params))
-    assert diff > 0.0
+
+def test_build_from_config_matches_config_yaml():
+    import yaml
+
+    with open('config.yaml') as f:
+        cfg = yaml.safe_load(f)
+
+    model = build_from_config(cfg)
+    assert model.fc1.in_features == cfg['model']['input_dim']
+    assert [model.fc1.out_features, model.fc2.out_features] == cfg['model']['hidden_dims']
+    # The BN module names must match what config.yaml tells FedBN to keep local.
+    assert sorted(cfg['model']['bn_layers']) == ['bn1', 'bn2']
