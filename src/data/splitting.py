@@ -10,6 +10,7 @@ import os
 import numpy as np
 import pandas as pd
 import yaml
+from sklearn.model_selection import train_test_split
 
 
 def dirichlet_split(
@@ -74,6 +75,42 @@ def dirichlet_split(
     )
 
 
+def local_train_test_split(shards, test_frac=0.15, seed=42, target='cardio'):
+    """
+    Give every hospital its own held-out test set, carved from its own shard.
+
+    The split is stratified on `target`, so each hospital's test set inherits that
+    hospital's label skew. That is deliberate: a hospital's local test set must look
+    like the patients that hospital actually sees, otherwise it cannot measure
+    personalization (FedBN adapts to the local distribution, so evaluating on an IID
+    set would penalise exactly the thing it is meant to do).
+
+    The consequence is that local accuracy is NOT comparable across hospitals and is
+    NOT comparable to the centralized number: an 83%-positive hospital scores 83% by
+    answering "positive" every time. Always read local accuracy next to the
+    `majority_baseline` reported by src.utils.metrics.binary_metrics.
+
+    Args:
+        shards: list[DataFrame], one per hospital, from dirichlet_split.
+        test_frac: Fraction of each shard held out locally.
+        seed: Seed for the stratified split.
+        target: Name of the label column.
+
+    Returns:
+        list[tuple[DataFrame, DataFrame]]: (local_train, local_test) per hospital.
+    """
+    out = []
+    for shard in shards:
+        tr, te = train_test_split(
+            shard,
+            test_size=test_frac,
+            random_state=seed,
+            stratify=shard[target],
+        )
+        out.append((tr.reset_index(drop=True), te.reset_index(drop=True)))
+    return out
+
+
 def class_counts(shards, target='cardio'):
     """Per-hospital class counts as a DataFrame, for logging and sanity checks."""
     return pd.DataFrame(
@@ -108,12 +145,27 @@ def main():
           f"min_per_class={data_cfg['min_samples_per_class']}")
     print(counts.to_string())
 
-    for i, shard in enumerate(shards):
-        path = os.path.join(processed_dir, f'hospital_{i}.csv')
-        shard.to_csv(path, index=False)
-        print(f'Saved {path} ({shard.shape})')
+    test_frac = data_cfg['test_split']
+    splits = local_train_test_split(
+        shards,
+        test_frac=test_frac,
+        seed=data_cfg['random_seed'],
+    )
 
-    print('\nTest set (data/processed/test.csv) is untouched and held out.')
+    print(f'\nLocal train/test split per hospital (test_frac={test_frac}):')
+    for i, (local_train, local_test) in enumerate(splits):
+        for name, part in (('train', local_train), ('test', local_test)):
+            path = os.path.join(processed_dir, f'hospital_{i}_{name}.csv')
+            part.to_csv(path, index=False)
+        print(f'  hospital_{i}: train={len(local_train):6d} test={len(local_test):5d} '
+              f'| test pos_rate={local_test["cardio"].mean():.3f} '
+              f'| majority baseline={max(local_test["cardio"].mean(), 1 - local_test["cardio"].mean()):.1%}')
+
+        stale = os.path.join(processed_dir, f'hospital_{i}.csv')
+        if os.path.exists(stale):
+            print(f'    note: {stale} is superseded by the two files above; delete it when ready.')
+
+    print('\nGlobal test set (data/processed/test.csv) is untouched and held out.')
 
 
 if __name__ == '__main__':
