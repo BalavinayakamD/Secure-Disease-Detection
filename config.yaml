@@ -4,7 +4,7 @@ data:
 
   num_clients: 3
 
-  test_split: 0.15
+  test_split: 0.20
 
   dirichlet_alpha: 1.0
   min_samples_per_class: 20
