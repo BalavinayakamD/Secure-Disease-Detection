@@ -33,6 +33,8 @@ class CardioPreprocessor:
         self.target_column = 'cardio'
         self.removed_rows = 0
         self.invalid_values_found = {}
+        self.duplicate_rows = 0
+        self.conflicting_rows = 0
         
     def load_data(self, filepath):
         """Load raw CSV data."""
@@ -142,6 +144,44 @@ class CardioPreprocessor:
         print(f"Age range: {df['age'].min():.1f} - {df['age'].max():.1f} years")
         return df
     
+    def remove_duplicates(self, df):
+        """
+        Drop duplicate patient records.
+
+        The raw dataset stores rows with identical measurements under different
+        ids. Left in place, train_test_split scatters copies of the same record
+        across both sides, which is train/test contamination.
+
+        Two cases:
+        - Exact duplicates (same features AND same label): keep the first.
+        - Conflicting duplicates (same features, opposite label): drop every
+          copy. They cannot be learned, and keeping one means picking a label
+          by coin flip.
+        """
+        print("\nChecking for duplicate records...")
+
+        # Drop id first: it is the only thing making these rows look distinct.
+        if 'id' in df.columns:
+            df = df.drop(columns=['id'])
+            print("Removed 'id' column")
+
+        before = len(df)
+        feature_cols = [c for c in df.columns if c != self.target_column]
+
+        df = df.drop_duplicates()
+        self.duplicate_rows = before - len(df)
+        print(f"Exact duplicate rows removed: {self.duplicate_rows}")
+
+        label_counts = df.groupby(feature_cols, sort=False)[self.target_column].transform('nunique')
+        conflicting = label_counts > 1
+        self.conflicting_rows = int(conflicting.sum())
+        df = df[~conflicting].copy()
+        print(f"Conflicting-label rows removed: {self.conflicting_rows} "
+              f"({self.conflicting_rows // 2} contradictory pairs)")
+
+        print(f"Rows after de-duplication: {len(df)}")
+        return df
+
     def prepare_features_and_target(self, df):
         """
         Separate features and target.
@@ -404,8 +444,12 @@ class CardioPreprocessor:
         print(f"Final test shape: {final_test_shape}")
         print(f"Total final samples: {final_train_shape[0] + final_test_shape[0]}")
         
-        print(f"\nRows removed: {self.removed_rows}")
-        print(f"Percentage removed: {self.removed_rows / initial_shape[0] * 100:.2f}%")
+        print(f"\nRows removed (invalid): {self.removed_rows}")
+        print(f"Rows removed (duplicate): {self.duplicate_rows}")
+        print(f"Rows removed (conflicting labels): {self.conflicting_rows}")
+        total_removed = self.removed_rows + self.duplicate_rows + self.conflicting_rows
+        print(f"Total removed: {total_removed} "
+              f"({total_removed / initial_shape[0] * 100:.2f}%)")
         
         print(f"\nInvalid values found:")
         for key, count in self.invalid_values_found.items():
@@ -420,6 +464,7 @@ class CardioPreprocessor:
         
         print(f"\nPreprocessing performed:")
         print(f"  ✓ Invalid value removal")
+        print(f"  ✓ Duplicate and conflicting-record removal")
         print(f"  ✓ Age conversion (days → years)")
         print(f"  ✓ ID column removal")
         print(f"  ✓ Feature/target separation")
@@ -458,6 +503,9 @@ def main():
     # Convert age to years
     df_clean = preprocessor.convert_age_to_years(df_clean)
     
+    # Remove duplicate records (prevents train/test contamination)
+    df_clean = preprocessor.remove_duplicates(df_clean)
+
     # Prepare features and target
     X, y = preprocessor.prepare_features_and_target(df_clean)
     
