@@ -1,0 +1,134 @@
+{
+  "experiment": "at_fedbn",
+  "num_rounds": 2,
+  "num_clients": 3,
+  "beta": 0.7,
+  "config": {
+    "model": {
+      "input_dim": 11,
+      "hidden_dims": [
+        64,
+        32
+      ],
+      "dropout": 0.2,
+      "bn_layers": [
+        "bn1",
+        "bn2"
+      ]
+    },
+    "training": {
+      "local_epochs": 2,
+      "batch_size": 64,
+      "learning_rate": 0.001,
+      "optimizer": "adam",
+      "loss_fn": "bce"
+    },
+    "federated": {
+      "num_rounds": 10,
+      "strategy": "at_fedbn",
+      "beta": 0.7,
+      "trust_method": "cosine_update",
+      "trust_floor": 0.0,
+      "trust_epsilon": 1e-08
+    },
+    "privacy": {
+      "enabled": true,
+      "clip_norm": 1.0,
+      "noise_scale": 0.01
+    }
+  },
+  "rounds": [
+    1,
+    2
+  ],
+  "global": {
+    "1": {
+      "accuracy": 0.0,
+      "balanced_accuracy": 0.0,
+      "f1": 0.0,
+      "roc_auc": 0.0,
+      "majority_baseline": 0.5
+    },
+    "2": {
+      "accuracy": 0.0,
+      "balanced_accuracy": 0.0,
+      "f1": 0.0,
+      "roc_auc": 0.0,
+      "majority_baseline": 0.5
+    }
+  },
+  "local": {
+    "per_hospital": {
+      "hospital_0": {
+        "accuracy": 0.5466666666666666,
+        "balanced_accuracy": 0.5555555555555556,
+        "majority_baseline": 0.6,
+        "precision": 0.45,
+        "recall": 0.6,
+        "f1": 0.5142857142857142,
+        "roc_auc": 0.58
+      },
+      "hospital_1": {
+        "accuracy": 0.55,
+        "balanced_accuracy": 0.40723562152133586,
+        "majority_baseline": 0.8166666666666667,
+        "precision": 0.775,
+        "recall": 0.6326530612244898,
+        "f1": 0.6966292134831461,
+        "roc_auc": 0.4359925788497217
+      },
+      "hospital_2": {
+        "accuracy": 0.37142857142857144,
+        "balanced_accuracy": 0.4013605442176871,
+        "majority_baseline": 0.7,
+        "precision": 0.23255813953488372,
+        "recall": 0.47619047619047616,
+        "f1": 0.3125,
+        "roc_auc": 0.38095238095238093
+      }
+    },
+    "average": {
+      "accuracy": 0.4893650793650794,
+      "balanced_accuracy": 0.4547172404315261,
+      "f1": 0.5078049759229534,
+      "roc_auc": 0.4656483199340342
+    }
+  },
+  "trust_scores": {
+    "1": {
+      "13064484103282718483": 0.5143003512752256,
+      "17496117308053740331": 0.6267514872477465,
+      "15336533038012674508": 0.5750493908585648
+    },
+    "2": {
+      "15336533038012674508": 0.5933384944999268,
+      "13064484103282718483": 0.52210655334424,
+      "17496117308053740331": 0.6288135317209806
+    }
+  },
+  "weights": {
+    "2": {
+      "15336533038012674508": {
+        "volume": 0,
+        "trust": 0.3401665908089436,
+        "final": 0.1020499772426831,
+        "num_examples": 0,
+        "cosine": 0.5933384944999268
+      },
+      "13064484103282718483": {
+        "volume": 0,
+        "trust": 0.2993286428176285,
+        "final": 0.08979859284528856,
+        "num_examples": 0,
+        "cosine": 0.52210655334424
+      },
+      "17496117308053740331": {
+        "volume": 0,
+        "trust": 0.3605047663734279,
+        "final": 0.10815142991202838,
+        "num_examples": 0,
+        "cosine": 0.6288135317209806
+      }
+    }
+  }
+}
