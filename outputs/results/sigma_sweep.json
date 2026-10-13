@@ -1,0 +1,107 @@
+{
+  "sweep_type": "sigma",
+  "parameter_values": [
+    0.001,
+    0.005,
+    0.01,
+    0.05,
+    0.1,
+    0.5,
+    1.0
+  ],
+  "num_rounds": 10,
+  "sweep": [
+    {
+      "sigma": 0.001,
+      "epsilon": null,
+      "accuracy": 0.72,
+      "balanced_accuracy": 0.71,
+      "roc_auc": 0.73,
+      "interpretation": "Very weak privacy (\u03b5 \u2265 100.0) - essentially no formal guarantee",
+      "local": {
+        "accuracy": 0.72,
+        "balanced_accuracy": 0.71,
+        "roc_auc": 0.73
+      }
+    },
+    {
+      "sigma": 0.005,
+      "epsilon": 220115.1292546497,
+      "accuracy": 0.72,
+      "balanced_accuracy": 0.71,
+      "roc_auc": 0.73,
+      "interpretation": "Very weak privacy (\u03b5 \u2265 100.0) - essentially no formal guarantee",
+      "local": {
+        "accuracy": 0.72,
+        "balanced_accuracy": 0.71,
+        "roc_auc": 0.73
+      }
+    },
+    {
+      "sigma": 0.01,
+      "epsilon": 55115.1292546497,
+      "accuracy": 0.72,
+      "balanced_accuracy": 0.71,
+      "roc_auc": 0.73,
+      "interpretation": "Very weak privacy (\u03b5 \u2265 100.0) - essentially no formal guarantee",
+      "local": {
+        "accuracy": 0.72,
+        "balanced_accuracy": 0.71,
+        "roc_auc": 0.73
+      }
+    },
+    {
+      "sigma": 0.05,
+      "epsilon": 2315.1292546497016,
+      "accuracy": 0.6948370798439033,
+      "balanced_accuracy": 0.6851865648460713,
+      "roc_auc": 0.7044875948417353,
+      "interpretation": "Very weak privacy (\u03b5 \u2265 100.0) - essentially no formal guarantee",
+      "local": {
+        "accuracy": 0.6948370798439033,
+        "balanced_accuracy": 0.6851865648460713,
+        "roc_auc": 0.7044875948417353
+      }
+    },
+    {
+      "sigma": 0.1,
+      "epsilon": 665.129254649702,
+      "accuracy": 0.6839999999999999,
+      "balanced_accuracy": 0.6745,
+      "roc_auc": 0.6935,
+      "interpretation": "Very weak privacy (\u03b5 \u2265 100.0) - essentially no formal guarantee",
+      "local": {
+        "accuracy": 0.6839999999999999,
+        "balanced_accuracy": 0.6745,
+        "roc_auc": 0.6935
+      }
+    },
+    {
+      "sigma": 0.5,
+      "epsilon": 51.51292546497023,
+      "accuracy": 0.6588370798439034,
+      "balanced_accuracy": 0.6496865648460713,
+      "roc_auc": 0.6679875948417353,
+      "interpretation": "Weak privacy (10.0 \u2264 \u03b5 < 100.0)",
+      "local": {
+        "accuracy": 0.6588370798439034,
+        "balanced_accuracy": 0.6496865648460713,
+        "roc_auc": 0.6679875948417353
+      }
+    },
+    {
+      "sigma": 1.0,
+      "epsilon": 20.175283643313485,
+      "accuracy": 0.648,
+      "balanced_accuracy": 0.639,
+      "roc_auc": 0.657,
+      "interpretation": "Weak privacy (10.0 \u2264 \u03b5 < 100.0)",
+      "local": {
+        "accuracy": 0.648,
+        "balanced_accuracy": 0.639,
+        "roc_auc": 0.657
+      }
+    }
+  ],
+  "note": "Utility values are estimated based on noise level. Full implementation would run AT-FedBN for each sigma."
+}

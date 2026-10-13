@@ -129,9 +129,8 @@ def run_simulation(
     # Build reference model and extract non-BN initial parameters
     reference_model = CardioMLP(
         input_dim=model_cfg.get("input_dim", 11),
-        hidden_dims=model_cfg.get("hidden_dims", [64, 32]),
+        hidden_dims=tuple(model_cfg.get("hidden_dims", [64, 32])),
         dropout=model_cfg.get("dropout", 0.2),
-        bn_layers=model_cfg.get("bn_layers", ["bn1", "bn2"]),
     )
     initial_parameters = get_initial_parameters(
         reference_model, bn_layer_names=model_cfg.get("bn_layers", ["bn1", "bn2"])
