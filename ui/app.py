@@ -27,6 +27,117 @@ GRAPHS_DIR = 'outputs/graphs'
 DATA_DIR = 'data/processed'
 
 # ============================================================================
+# Data Loading Functions
+# ============================================================================
+
+def get_project_root():
+    """Get absolute path to project root."""
+    return Path(__file__).resolve().parents[1]
+
+
+def resolve_path(relative_path):
+    """Resolve a path relative to project root."""
+    return str(get_project_root() / relative_path)
+
+
+def load_json(filename):
+    """Load a JSON result file if it exists."""
+    path = resolve_path(os.path.join(RESULTS_DIR, filename))
+    if os.path.exists(path):
+        try:
+            with open(path) as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError):
+            return None
+    return None
+
+
+def load_config():
+    """Load the project configuration."""
+    path = resolve_path('config.yaml')
+    with open(path) as f:
+        return yaml.safe_load(f)
+
+
+def count_available_experiments():
+    """Count how many experiment result files exist."""
+    experiments = [
+        'central_baseline.json',
+        'fedavg_baseline.json',
+        'fedbn_only.json',
+        'at_fedbn.json'
+    ]
+    results_path = resolve_path(RESULTS_DIR)
+    count = sum(1 for exp in experiments if os.path.exists(os.path.join(results_path, exp)))
+    return count
+
+
+def get_dataset_statistics(cfg):
+    """Calculate actual dataset statistics from config and files."""
+    stats = {
+        'num_hospitals': cfg['data']['num_clients'],
+        'total_train': 0,
+        'total_test': 0,
+        'hospital_details': []
+    }
+    
+    data_dir = resolve_path(cfg['data']['processed_dir'])
+    
+    for i in range(cfg['data']['num_clients']):
+        train_path = os.path.join(data_dir, f'hospital_{i}_train.csv')
+        test_path = os.path.join(data_dir, f'hospital_{i}_test.csv')
+        
+        if os.path.exists(train_path) and os.path.exists(test_path):
+            train_df = pd.read_csv(train_path)
+            test_df = pd.read_csv(test_path)
+            
+            stats['total_train'] += len(train_df)
+            stats['total_test'] += len(test_df)
+            stats['hospital_details'].append({
+                'id': i,
+                'train_samples': len(train_df),
+                'test_samples': len(test_df),
+                'positive_rate_train': train_df['cardio'].mean(),
+                'positive_rate_test': test_df['cardio'].mean()
+            })
+    
+    return stats
+
+
+def get_epsilon_from_noise_scale(noise_scale, sensitivity=1.0, delta=1e-5, steps=10):
+    """
+    Estimate privacy budget epsilon from noise scale.
+    
+    This is a simplified RDP accountant approximation.
+    """
+    if noise_scale is None or noise_scale == 0:
+        return None
+    
+    # Approximate epsilon using RDP composition
+    # For Gaussian mechanism with noise_scale sigma:
+    # epsilon ≈ steps * (sensitivity^2 / (2 * sigma^2))
+    
+    try:
+        epsilon = steps * (sensitivity ** 2) / (2 * noise_scale ** 2)
+        return epsilon
+    except (ZeroDivisionError, TypeError):
+        return None
+
+
+def format_epsilon(epsilon):
+    """Format epsilon value for display with privacy level."""
+    if epsilon is None:
+        return "∞ (No DP)", "None"
+    elif epsilon >= 100:
+        return f"{epsilon:,.0f}", "❌ Very Weak"
+    elif epsilon >= 10:
+        return f"{epsilon:.1f}", "⚠️ Weak"
+    elif epsilon >= 1:
+        return f"{epsilon:.2f}", "⚠️ Moderate"
+    else:
+        return f"{epsilon:.3f}", "✅ Strong"
+
+# ============================================================================
 # Page Configuration
 # ============================================================================
 
@@ -109,19 +220,6 @@ st.markdown("""
 # Utility Functions
 # ============================================================================
 
-def load_json(filename):
-    """Load a JSON result file if it exists."""
-    path = os.path.join(RESULTS_DIR, filename)
-    if os.path.exists(path):
-        with open(path) as f:
-            return json.load(f)
-    return None
-
-def load_config():
-    """Load the project configuration."""
-    with open('config.yaml') as f:
-        return yaml.safe_load(f)
-
 def format_metric(value, format_type='float'):
     """Format a metric value for display."""
     if value is None:
@@ -134,9 +232,10 @@ def format_metric(value, format_type='float'):
         return f'{int(value):,}'
     return str(value)
 
+
 def get_image_path(filename):
     """Get the full path to a graph image."""
-    path = os.path.join(GRAPHS_DIR, filename)
+    path = resolve_path(os.path.join(GRAPHS_DIR, filename))
     return path if os.path.exists(path) else None
 
 # ============================================================================
@@ -155,6 +254,20 @@ st.markdown("""
 
 # Load configuration
 cfg = load_config()
+
+# Get dynamic dataset statistics
+dataset_stats = get_dataset_statistics(cfg)
+
+# Count available experiments
+experiments_completed = count_available_experiments()
+
+# Calculate privacy parameters
+noise_scale = cfg['privacy'].get('noise_scale', 0)
+estimated_epsilon = get_epsilon_from_noise_scale(
+    noise_scale, 
+    steps=cfg['federated']['num_rounds']
+)
+epsilon_str, privacy_level = format_epsilon(estimated_epsilon)
 
 # ============================================================================
 # Main Navigation Tabs
@@ -190,21 +303,21 @@ with tab_overview:
         - **Differential Privacy**: Noise protects individual patient privacy (optional)
         """)
         
-        st.markdown('## System Architecture')
-        st.code("""
+        st.markdown('### System Architecture')
+        st.code(f"""
 Hospital Data (Non-IID, Privacy-Sensitive)
     ↓
 Local Model Training (CardioMLP)
-    ↓ (2 epochs per round)
+    ↓ ({cfg['training']['local_epochs']} epochs per round)
 Extract Shared Parameters (fc1, fc2, fc3 weights)
     ↓
-Apply Differential Privacy (Gaussian noise, σ=0.01)
+Apply Differential Privacy (Gaussian noise, σ={cfg['privacy'].get('noise_scale', 'N/A')})
     ↓
 Send to Central Server
     ↓
 Calculate Trust Scores (cosine similarity with global trend)
     ↓
-Hybrid Aggregation (β·volume + (1-β)·trust, β=0.7)
+Hybrid Aggregation (β·volume + (1-β)·trust, β={cfg['federated'].get('beta', 0.7)})
     ↓
 Broadcast Updated Global Parameters
     ↓
@@ -219,12 +332,23 @@ Next Training Round
         # Load summary statistics
         summary = load_json('summary_statistics.json')
         
+        st.metric('Experiments Complete', experiments_completed)
+        
         if summary:
-            st.metric('Experiments Complete', len(summary.get('experiments_completed', [])))
             st.metric('Training Rounds', summary.get('num_fl_rounds', cfg['federated']['num_rounds']))
             st.metric('Hospitals', summary.get('num_hospitals', cfg['data']['num_clients']))
-            st.metric('Total Samples', 
-                     format_metric(summary.get('total_training_samples', 0) + summary.get('total_test_samples', 0), 'int'))
+            total_samples = summary.get('total_training_samples', 0) + summary.get('total_test_samples', 0)
+            if total_samples == 0:
+                total_samples = dataset_stats['total_train'] + dataset_stats['total_test']
+            st.metric('Total Samples', format_metric(total_samples, 'int'))
+        else:
+            st.metric('Training Rounds', cfg['federated']['num_rounds'])
+            st.metric('Hospitals', cfg['data']['num_clients'])
+            total_samples = dataset_stats['total_train'] + dataset_stats['total_test']
+            if total_samples > 0:
+                st.metric('Total Samples', format_metric(total_samples, 'int'))
+            else:
+                st.metric('Total Samples', 'N/A')
         
         st.markdown('### Model Architecture')
         st.markdown(f"""
@@ -246,12 +370,12 @@ Next Training Round
     # Results Summary Table
     st.markdown('## Performance Summary')
     
-    master_table_path = os.path.join(RESULTS_DIR, 'master_table.md')
+    master_table_path = resolve_path(os.path.join(RESULTS_DIR, 'master_table.md'))
     if os.path.exists(master_table_path):
         with open(master_table_path) as f:
             st.markdown(f.read())
     else:
-        st.info('Run experiments to generate results table.')
+        st.info('Run `python experiments/compare_all.py` to generate comprehensive results table.')
     
     # Key Findings
     summary = load_json('summary_statistics.json')
@@ -262,45 +386,50 @@ Next Training Round
         central = perf.get('Centralized', {})
         at_fedbn = perf.get('AT-FedBN', {})
         
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            st.metric(
-                'ROC-AUC',
-                format_metric(at_fedbn.get('roc_auc')),
-                delta=format_metric(at_fedbn.get('roc_auc', 0) - central.get('roc_auc', 0)),
-                help='AT-FedBN vs. Centralized baseline'
-            )
-        
-        with col2:
-            st.metric(
-                'Balanced Accuracy',
-                format_metric(at_fedbn.get('balanced_accuracy')),
-                delta=format_metric(at_fedbn.get('balanced_accuracy', 0) - central.get('balanced_accuracy', 0)),
-                help='AT-FedBN vs. Centralized baseline'
-            )
-        
-        with col3:
-            st.metric(
-                'F1 Score',
-                format_metric(at_fedbn.get('f1')),
-                delta=format_metric(at_fedbn.get('f1', 0) - central.get('f1', 0)),
-                help='AT-FedBN vs. Centralized baseline'
-            )
-        
-        with col4:
-            st.metric(
-                'Accuracy',
-                format_metric(at_fedbn.get('accuracy')),
-                delta=format_metric(at_fedbn.get('accuracy', 0) - central.get('accuracy', 0)),
-                help='AT-FedBN vs. Centralized baseline'
-            )
-        
-        st.markdown("""
-        **Interpretation**: AT-FedBN achieves comparable (or in some metrics, superior) performance
-        to centralized training while maintaining patient privacy through local training and
-        differential privacy.
-        """)
+        if central and at_fedbn:
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                st.metric(
+                    'ROC-AUC',
+                    format_metric(at_fedbn.get('roc_auc')),
+                    delta=format_metric(at_fedbn.get('roc_auc', 0) - central.get('roc_auc', 0)),
+                    help='AT-FedBN vs. Centralized baseline'
+                )
+            
+            with col2:
+                st.metric(
+                    'Balanced Accuracy',
+                    format_metric(at_fedbn.get('balanced_accuracy')),
+                    delta=format_metric(at_fedbn.get('balanced_accuracy', 0) - central.get('balanced_accuracy', 0)),
+                    help='AT-FedBN vs. Centralized baseline'
+                )
+            
+            with col3:
+                st.metric(
+                    'F1 Score',
+                    format_metric(at_fedbn.get('f1')),
+                    delta=format_metric(at_fedbn.get('f1', 0) - central.get('f1', 0)),
+                    help='AT-FedBN vs. Centralized baseline'
+                )
+            
+            with col4:
+                st.metric(
+                    'Accuracy',
+                    format_metric(at_fedbn.get('accuracy')),
+                    delta=format_metric(at_fedbn.get('accuracy', 0) - central.get('accuracy', 0)),
+                    help='AT-FedBN vs. Centralized baseline'
+                )
+            
+            st.markdown("""
+            **Interpretation**: AT-FedBN achieves comparable (or in some metrics, superior) performance
+            to centralized training while maintaining patient privacy through local training and
+            differential privacy.
+            """)
+        else:
+            st.info('Complete experiments to see performance comparison.')
+    else:
+        st.info('Run experiments to see performance metrics.')
 
 # ============================================================================
 # TAB 2: Hospital Data Distribution
@@ -465,7 +594,7 @@ with tab_trust:
     Weight_i = β · (n_i / N) + (1 - β) · (Trust_i / Σ Trust_j)
     ```
     
-    where β=0.7 balances data volume and trust.
+    where β={cfg['federated'].get('beta', 0.7)} balances data volume and trust.
     """)
     
     # Trust heatmap
@@ -606,10 +735,10 @@ with tab_comparison:
             st.dataframe(df_privacy, use_container_width=True, hide_index=True)
             
             st.warning(f"""
-            **Current Configuration**: σ={cfg['privacy'].get('noise_scale', 0.01)} provides very weak formal privacy
-            (ε ≈ 55,000). This is a deliberate design choice prioritizing utility for research
-            demonstration. For deployment, increase σ substantially (e.g., σ=0.5-1.0) to achieve
-            meaningful privacy guarantees, accepting some accuracy reduction.
+            **Current Configuration**: σ={cfg['privacy'].get('noise_scale', 0)} provides {privacy_level.lower()} formal privacy
+            (ε ≈ {epsilon_str}). This configuration prioritizes utility for research
+            demonstration. For deployment with stronger privacy guarantees, increase σ substantially 
+            (e.g., σ=0.5-1.0), accepting some accuracy reduction.
             """)
     else:
         st.info('Run sigma sweep experiment to analyze privacy-utility tradeoff.')
@@ -646,10 +775,10 @@ with tab_demo:
         **Configuration**: 2 rounds, β={beta_demo}
         
         - β=0.0: Pure trust-based aggregation
-        - β=0.7: Hybrid (70% volume, 30% trust)
+        - β={cfg['federated'].get('beta', 0.7)}: Hybrid ({int(cfg['federated'].get('beta', 0.7)*100)}% volume, {int((1-cfg['federated'].get('beta', 0.7))*100)}% trust)
         - β=1.0: Pure volume-based (standard FedAvg)
         
-        Training takes approximately 20-30 seconds.
+        Training completes in approximately 20-30 seconds on this dataset.
         """)
     
     if run_demo:
@@ -746,7 +875,11 @@ with col1:
 with col2:
     st.markdown('**Dataset**')
     st.caption('Cardiovascular Disease Dataset')
-    st.caption('70,000 patient records across 3 hospitals')
+    total_dataset_size = dataset_stats['total_train'] + dataset_stats['total_test']
+    if total_dataset_size > 0:
+        st.caption(f'{total_dataset_size:,} patient records across {dataset_stats["num_hospitals"]} hospitals')
+    else:
+        st.caption(f'Configured for {cfg["data"]["num_clients"]} hospitals')
 
 with col3:
     st.markdown('**Quick Links**')
