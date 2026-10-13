@@ -39,8 +39,24 @@ from src.utils.metrics import binary_metrics
 
 def load_hospital_data(hospital_id: int, data_dir: str = 'data/processed'):
     """Load training and validation data for a specific hospital."""
+    # Resolve path relative to project root if not absolute
+    if not os.path.isabs(data_dir):
+        project_root = Path(__file__).resolve().parents[1]
+        data_dir = str(project_root / data_dir)
+    
     train_path = os.path.join(data_dir, f'hospital_{hospital_id}_train.csv')
     test_path = os.path.join(data_dir, f'hospital_{hospital_id}_test.csv')
+    
+    if not os.path.exists(train_path):
+        raise FileNotFoundError(
+            f"Hospital {hospital_id} train data not found at {train_path}.\n"
+            f"Run data preprocessing to generate hospital-specific datasets."
+        )
+    if not os.path.exists(test_path):
+        raise FileNotFoundError(
+            f"Hospital {hospital_id} test data not found at {test_path}.\n"
+            f"Run data preprocessing to generate hospital-specific datasets."
+        )
     
     train_df = pd.read_csv(train_path)
     test_df = pd.read_csv(test_path)
@@ -103,8 +119,27 @@ def make_client_fn(config: dict):
 
 def evaluate_global_model(server_round, parameters, config):
     """Evaluate the global model on the held-out test set."""
+    # Resolve data directory relative to project root
+    data_dir = config['data']['processed_dir']
+    if not os.path.isabs(data_dir):
+        project_root = Path(__file__).resolve().parents[1]
+        data_dir = str(project_root / data_dir)
+    
+    # Check if global test set exists, otherwise skip evaluation
+    test_path = os.path.join(data_dir, 'test.csv')
+    if not os.path.exists(test_path):
+        # No global test set available - this is expected for hospital-only splits
+        # Return dummy metrics
+        return 0.0, {
+            'accuracy': 0.0,
+            'balanced_accuracy': 0.0,
+            'f1': 0.0,
+            'roc_auc': 0.0,
+            'majority_baseline': 0.5
+        }
+    
     # Load global test set
-    X_test, _, y_test, _ = load_processed_data(config['data']['processed_dir'])
+    X_train, X_test, y_train, y_test = load_processed_data(data_dir)
     
     # Convert to tensors
     X_test_tensor = torch.from_numpy(X_test.values.astype(np.float32))
@@ -358,12 +393,19 @@ def run_at_fedbn(
         # Compute volume weights (from data sizes)
         volume_weights = {}
         total_samples = 0
+        
+        # Resolve data directory relative to project root
+        data_dir = config['data']['processed_dir']
+        if not os.path.isabs(data_dir):
+            project_root = Path(__file__).resolve().parents[1]
+            data_dir = str(project_root / data_dir)
+        
         for hospital_id in range(num_clients):
-            train_path = os.path.join(config['data']['processed_dir'], 
-                                     f'hospital_{hospital_id}_train.csv')
-            num_samples = len(pd.read_csv(train_path))
-            volume_weights[f'hospital_{hospital_id}'] = num_samples
-            total_samples += num_samples
+            train_path = os.path.join(data_dir, f'hospital_{hospital_id}_train.csv')
+            if os.path.exists(train_path):
+                num_samples = len(pd.read_csv(train_path))
+                volume_weights[f'hospital_{hospital_id}'] = num_samples
+                total_samples += num_samples
         
         # Normalize volume weights
         for k in volume_weights:

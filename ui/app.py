@@ -220,11 +220,11 @@ Next Training Round
         summary = load_json('summary_statistics.json')
         
         if summary:
-            st.metric('Experiments Complete', summary.get('experiments_completed', 0))
-            st.metric('Training Rounds', summary.get('federated_config', {}).get('rounds', 0))
-            st.metric('Hospitals', summary.get('dataset_stats', {}).get('hospitals', 0))
+            st.metric('Experiments Complete', len(summary.get('experiments_completed', [])))
+            st.metric('Training Rounds', summary.get('num_fl_rounds', cfg['federated']['num_rounds']))
+            st.metric('Hospitals', summary.get('num_hospitals', cfg['data']['num_clients']))
             st.metric('Total Samples', 
-                     format_metric(summary.get('dataset_stats', {}).get('total_samples', 0), 'int'))
+                     format_metric(summary.get('total_training_samples', 0) + summary.get('total_test_samples', 0), 'int'))
         
         st.markdown('### Model Architecture')
         st.markdown(f"""
@@ -239,8 +239,8 @@ Next Training Round
         - **Local Epochs**: {cfg['training']['local_epochs']} per round
         - **Batch Size**: {cfg['training']['batch_size']}
         - **Learning Rate**: {cfg['training']['learning_rate']}
-        - **DP Noise (σ)**: {cfg['privacy']['noise_multiplier']}
-        - **Gradient Clip (C)**: {cfg['privacy']['max_grad_norm']}
+        - **DP Noise (σ)**: {cfg['privacy'].get('noise_scale', 'N/A')}
+        - **Gradient Clip (C)**: {cfg['privacy'].get('clip_norm', 'N/A')}
         """)
     
     # Results Summary Table
@@ -255,12 +255,12 @@ Next Training Round
     
     # Key Findings
     summary = load_json('summary_statistics.json')
-    if summary and 'performance_summary' in summary:
+    if summary and 'performance_comparison' in summary:
         st.markdown('## Key Findings')
         
-        perf = summary['performance_summary']
-        central = perf.get('centralized', {})
-        at_fedbn = perf.get('at_fedbn', {})
+        perf = summary['performance_comparison']
+        central = perf.get('Centralized', {})
+        at_fedbn = perf.get('AT-FedBN', {})
         
         col1, col2, col3, col4 = st.columns(4)
         
@@ -353,6 +353,27 @@ with tab_data:
         Hospital 2's different distribution. FedBN addresses this by keeping batch
         normalization statistics local to each hospital.
         """)
+    else:
+        # Show stats from result files if CSV files don't exist
+        at_fedbn_data = load_json('at_fedbn.json')
+        fedbn_data = load_json('fedbn_only.json')
+        
+        data_to_use = at_fedbn_data or fedbn_data
+        
+        if data_to_use and 'local' in data_to_use and 'per_hospital' in data_to_use['local']:
+            st.info('Processed hospital data files not found. Showing statistics from experiment results.')
+            
+            for hospital, metrics in sorted(data_to_use['local']['per_hospital'].items()):
+                st.markdown(f"**{hospital.replace('_', ' ').title()}**")
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric('Majority Baseline', format_metric(metrics.get('majority_baseline'), 'percent'))
+                with col2:
+                    st.metric('Balanced Accuracy', format_metric(metrics.get('balanced_accuracy')))
+                with col3:
+                    st.metric('ROC-AUC', format_metric(metrics.get('roc_auc')))
+        else:
+            st.warning('Run data preprocessing to generate hospital-specific datasets.')
     
     # Local performance by hospital
     st.markdown('### Local Model Performance')
@@ -403,8 +424,9 @@ with tab_training:
         fedbn_data = load_json('fedbn_only.json')
         if fedbn_data and 'local' in fedbn_data:
             local_results = fedbn_data['local']
-            st.metric('Global ROC-AUC', format_metric(local_results.get('global', {}).get('roc_auc')))
-            st.metric('Avg Hospital ROC-AUC', format_metric(local_results.get('mean_roc_auc')))
+            avg_metrics = local_results.get('average', {})
+            st.metric('Avg ROC-AUC', format_metric(avg_metrics.get('roc_auc')))
+            st.metric('Avg Balanced Acc', format_metric(avg_metrics.get('balanced_accuracy')))
             st.metric('Training Rounds', fedbn_data.get('num_rounds', 'N/A'))
         else:
             st.info('Run Experiment 03 (FedBN Only)')
@@ -414,8 +436,9 @@ with tab_training:
         at_fedbn_data = load_json('at_fedbn.json')
         if at_fedbn_data and 'local' in at_fedbn_data:
             local_results = at_fedbn_data['local']
-            st.metric('Global ROC-AUC', format_metric(local_results.get('global', {}).get('roc_auc')))
-            st.metric('Avg Hospital ROC-AUC', format_metric(local_results.get('mean_roc_auc')))
+            avg_metrics = local_results.get('average', {})
+            st.metric('Avg ROC-AUC', format_metric(avg_metrics.get('roc_auc')))
+            st.metric('Avg Balanced Acc', format_metric(avg_metrics.get('balanced_accuracy')))
             st.metric('Training Rounds', at_fedbn_data.get('num_rounds', 'N/A'))
             st.metric('Trust Beta', format_metric(at_fedbn_data.get('beta', 0.7)))
         else:
@@ -522,10 +545,10 @@ with tab_comparison:
         # FedBN
         rows.append({
             'Strategy': 'FedBN',
-            'Accuracy': format_metric(fedbn['local']['global']['accuracy']),
-            'Balanced Acc': format_metric(fedbn['local']['global']['balanced_accuracy']),
-            'F1': format_metric(fedbn['local']['global']['f1']),
-            'ROC-AUC': format_metric(fedbn['local']['global']['roc_auc']),
+            'Accuracy': format_metric(fedbn['local']['average']['accuracy']),
+            'Balanced Acc': format_metric(fedbn['local']['average']['balanced_accuracy']),
+            'F1': format_metric(fedbn['local']['average']['f1']),
+            'ROC-AUC': format_metric(fedbn['local']['average']['roc_auc']),
             'Privacy': '✅ Local training',
             'Collaboration': '✅ Federated'
         })
@@ -533,11 +556,11 @@ with tab_comparison:
         # AT-FedBN
         rows.append({
             'Strategy': 'AT-FedBN',
-            'Accuracy': format_metric(at_fedbn['local']['global']['accuracy']),
-            'Balanced Acc': format_metric(at_fedbn['local']['global']['balanced_accuracy']),
-            'F1': format_metric(at_fedbn['local']['global']['f1']),
-            'ROC-AUC': format_metric(at_fedbn['local']['global']['roc_auc']),
-            'Privacy': f"✅ Local + DP (σ={cfg['privacy']['noise_multiplier']})",
+            'Accuracy': format_metric(at_fedbn['local']['average']['accuracy']),
+            'Balanced Acc': format_metric(at_fedbn['local']['average']['balanced_accuracy']),
+            'F1': format_metric(at_fedbn['local']['average']['f1']),
+            'ROC-AUC': format_metric(at_fedbn['local']['average']['roc_auc']),
+            'Privacy': f"✅ Local + DP (σ={cfg['privacy'].get('noise_scale', 'N/A')})",
             'Collaboration': '✅ Federated + Trust'
         })
         
@@ -583,7 +606,7 @@ with tab_comparison:
             st.dataframe(df_privacy, use_container_width=True, hide_index=True)
             
             st.warning(f"""
-            **Current Configuration**: σ={cfg['privacy']['noise_multiplier']} provides very weak formal privacy
+            **Current Configuration**: σ={cfg['privacy'].get('noise_scale', 0.01)} provides very weak formal privacy
             (ε ≈ 55,000). This is a deliberate design choice prioritizing utility for research
             demonstration. For deployment, increase σ substantially (e.g., σ=0.5-1.0) to achieve
             meaningful privacy guarantees, accepting some accuracy reduction.

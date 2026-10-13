@@ -5,6 +5,12 @@ Utility functions for loading preprocessed cardiovascular disease data.
 import pandas as pd
 import joblib
 import os
+from pathlib import Path
+
+
+def _get_project_root():
+    """Get project root directory."""
+    return Path(__file__).resolve().parents[2]
 
 
 def load_processed_data(data_dir='data/processed'):
@@ -12,16 +18,38 @@ def load_processed_data(data_dir='data/processed'):
     Load preprocessed train and test data.
     
     Args:
-        data_dir: Directory containing processed data files
+        data_dir: Directory containing processed data files (relative to project root or absolute)
         
     Returns:
         tuple: (X_train, X_test, y_train, y_test)
     """
+    # Resolve path relative to project root if not absolute
+    if not os.path.isabs(data_dir):
+        data_dir = _get_project_root() / data_dir
+    
     train_path = os.path.join(data_dir, 'train.csv')
     test_path = os.path.join(data_dir, 'test.csv')
     
+    if not os.path.exists(train_path):
+        raise FileNotFoundError(
+            f"Processed train data not found at {train_path}.\n"
+            f"Run data preprocessing first or check that hospital-specific data files exist."
+        )
+    if not os.path.exists(test_path):
+        raise FileNotFoundError(
+            f"Processed test data not found at {test_path}.\n"
+            f"Run data preprocessing first or check that hospital-specific data files exist."
+        )
+    
     train = pd.read_csv(train_path)
     test = pd.read_csv(test_path)
+    
+    required_cols = ['cardio']
+    for col in required_cols:
+        if col not in train.columns:
+            raise ValueError(f"Required column '{col}' missing from {train_path}")
+        if col not in test.columns:
+            raise ValueError(f"Required column '{col}' missing from {test_path}")
     
     X_train = train.drop(columns=['cardio'])
     y_train = train['cardio']
@@ -36,12 +64,20 @@ def load_scaler(data_dir='data/processed'):
     Load the fitted StandardScaler.
     
     Args:
-        data_dir: Directory containing the scaler file
+        data_dir: Directory containing the scaler file (relative to project root or absolute)
         
     Returns:
         StandardScaler: Fitted scaler object
     """
+    # Resolve path relative to project root if not absolute
+    if not os.path.isabs(data_dir):
+        data_dir = _get_project_root() / data_dir
+    
     scaler_path = os.path.join(data_dir, 'scaler.pkl')
+    
+    if not os.path.exists(scaler_path):
+        raise FileNotFoundError(f"Scaler not found at {scaler_path}")
+    
     return joblib.load(scaler_path)
 
 
