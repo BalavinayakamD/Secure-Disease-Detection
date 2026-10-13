@@ -1,0 +1,31 @@
+{
+  "experiments_completed": [
+    "Centralized Baseline",
+    "FedBN Only",
+    "AT-FedBN (Full)"
+  ],
+  "total_training_samples": 54872,
+  "total_test_samples": 13718,
+  "num_hospitals": 3,
+  "num_fl_rounds": 10,
+  "performance_comparison": {
+    "Centralized": {
+      "accuracy": 0.7289692374981775,
+      "balanced_accuracy": 0.7285945574101143,
+      "f1": 0.7165726482695532,
+      "roc_auc": 0.7990944783298939
+    },
+    "FedBN": {
+      "accuracy": 0.6131213548372813,
+      "balanced_accuracy": 0.6146176180496408,
+      "f1": 0.5708023568601482,
+      "roc_auc": 0.6621210604201163
+    },
+    "AT-FedBN": {
+      "accuracy": 0.699670613089133,
+      "balanced_accuracy": 0.7029681629930336,
+      "f1": 0.6213683352028249,
+      "roc_auc": 0.8055535843661285
+    }
+  }
+}

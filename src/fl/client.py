@@ -91,9 +91,8 @@ class FlowerClient(fl.client.NumPyClient):
             model_cfg = self.config.get("model", {})
             self.model = CardioMLP(
                 input_dim=model_cfg.get("input_dim", 11),
-                hidden_dims=model_cfg.get("hidden_dims", [64, 32]),
+                hidden_dims=tuple(model_cfg.get("hidden_dims", [64, 32])),
                 dropout=model_cfg.get("dropout", 0.2),
-                bn_layers=model_cfg.get("bn_layers", ["bn1", "bn2"]),
             ).to(self.device)
 
         self.train_loader = train_loader
@@ -214,7 +213,7 @@ class FlowerClient(fl.client.NumPyClient):
             return self.get_parameters(config), 0, {"loss": 0.0, "accuracy": 0.0}
 
         self.model.train()
-        criterion = nn.BCELoss()
+        criterion = nn.BCEWithLogitsLoss()
         optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
 
         total_loss = 0.0
@@ -238,7 +237,7 @@ class FlowerClient(fl.client.NumPyClient):
 
                 batch_size = x_batch.size(0)
                 epoch_loss += loss.item() * batch_size
-                predicted_labels = (preds >= 0.5).float()
+                predicted_labels = (torch.sigmoid(preds) >= 0.5).float()
                 epoch_correct += (predicted_labels == y_batch).sum().item()
                 epoch_samples += batch_size
 
@@ -269,7 +268,7 @@ class FlowerClient(fl.client.NumPyClient):
             return 0.0, 0, {"accuracy": 0.0, "f1": 0.0}
 
         self.model.eval()
-        criterion = nn.BCELoss()
+        criterion = nn.BCEWithLogitsLoss()
 
         total_loss = 0.0
         all_preds = []
@@ -285,7 +284,7 @@ class FlowerClient(fl.client.NumPyClient):
                 loss = criterion(preds, y_batch)
 
                 total_loss += loss.item() * x_batch.size(0)
-                predicted_labels = (preds >= 0.5).float()
+                predicted_labels = (torch.sigmoid(preds) >= 0.5).float()
 
                 all_preds.extend(predicted_labels.cpu().squeeze().tolist())
                 all_targets.extend(y_batch.cpu().squeeze().tolist())
