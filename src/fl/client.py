@@ -5,9 +5,24 @@ Implements:
 1. FedBN Parameter Localization: Only non-BatchNorm layers (Linear layers: fc1, fc2, fc3)
    are exchanged with the central server. Local BatchNorm parameters (bn1, bn2) and
    running statistics remain on the client for personalization.
-2. Lightweight Differential Privacy (DP): Clips L2 norm of weight updates (ΔW) to C
-   and adds Gaussian noise N(0, σ²C²) before transmission.
+   
+2. Lightweight Differential Privacy (DP): 
+   - Clips L2 norm of WEIGHT UPDATES (ΔW = W_current - W_initial) to bound C
+   - Adds Gaussian noise N(0, σ²C²) to the clipped update
+   - Reconstructs private weights: W_private = W_initial + clip(ΔW) + noise
+   - Applied CLIENT-SIDE before transmission to server
+   
+   NOTE: This is update-level DP, not gradient-level DP. The clipping happens on 
+   the aggregated weight change after local training, not on per-example gradients.
+   
 3. Local training and evaluation routines compatible with PyTorch and Flower simulation.
+
+IMPORTANT PRIVACY LIMITATION:
+The current implementation provides a *weak* privacy guarantee because:
+- Clipping is applied to the full weight update (aggregated across all local examples)
+- Not per-example gradient clipping as required for rigorous DP-SGD
+- Privacy budget calculation assumes this simplified mechanism
+- Formal (ε, δ)-DP guarantee requires additional assumptions about the threat model
 """
 
 import os
@@ -139,8 +154,17 @@ class FlowerClient(fl.client.NumPyClient):
     def get_parameters(self, config: Dict[str, fl.common.Scalar]) -> List[np.ndarray]:
         """
         Extracts shared parameters (non-BN) and applies Lightweight DP if enabled.
+        
         FedBN Rule: BN layers (bn1, bn2) remain strictly local and are omitted.
-        Lightweight DP: Clips L2 norm of update (ΔW) to C and adds Gaussian noise N(0, σ²C²).
+        
+        Lightweight DP (if enabled):
+          1. Compute weight update: ΔW = W_current - W_initial
+          2. Clip L2 norm: ΔW_clipped = ΔW * min(1, C / ||ΔW||₂)
+          3. Add noise: ΔW_private = ΔW_clipped + N(0, σ²C²I)
+          4. Return: W_private = W_initial + ΔW_private
+        
+        PRIVACY NOTE: This clips the AGGREGATED weight update (not per-example gradients).
+        See module docstring for limitations.
         """
         state_dict = self.model.state_dict()
         current_shared_tensors = [state_dict[name].detach().clone().cpu() for name in self.shared_param_names]
@@ -160,10 +184,11 @@ class FlowerClient(fl.client.NumPyClient):
         total_norm = np.sqrt(total_norm_sq)
 
         # Clip update: ΔW_clipped = ΔW * min(1, C / (||ΔW||_2 + eps))
+        # eps added for numerical stability
         clip_coef = min(1.0, self.clip_norm / (total_norm + 1e-8))
         clipped_deltas = [d * clip_coef for d in deltas]
 
-        # Add Gaussian noise: N(0, σ²C²)
+        # Add Gaussian noise: N(0, σ²C²I)
         noise_std = self.noise_scale * self.clip_norm
         private_parameters = []
         for d, init_arr in zip(clipped_deltas, self._initial_shared_params):

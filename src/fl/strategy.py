@@ -3,11 +3,30 @@ Custom Flower Strategy: ATFedBNStrategy (Adaptive Trust-Weighted Federated Batch
 
 Implements:
 1. Update Consistency Trust Mechanism:
-   - Evaluates client updates (ΔW_i) against global update direction (ΔW_global) using Cosine Similarity.
-   - Applies ReLU clipping to zero-out negative or diverging updates.
+   - Evaluates each client update ΔW_i against volume-weighted reference ΔW_global
+   - Trust score: max(0, CosineSimilarity(ΔW_i, ΔW_global))
+   - Interprets alignment as update consistency, NOT trustworthiness or data quality
+   - ReLU clipping zeros-out negatively-aligned updates
+   
 2. Hybrid Adaptive Aggregation:
-   - FinalWeight_i = (β * VolumeWeight_i) + ((1 - β) * TrustWeight_i)
-   - Aggregates non-BatchNorm parameters according to the hybrid weights.
+   - Volume weight: n_i / N (data-proportional)
+   - Trust weight: normalized trust scores
+   - Final weight: β * volume + (1-β) * trust
+   - Falls back to volume-only if all trust scores are zero
+   
+3. FedBN Parameter Handling:
+   - Only aggregates shared (non-BatchNorm) parameters
+   - Local BatchNorm statistics remain client-side
+   
+IMPORTANT INTERPRETATION:
+The trust score measures UPDATE ALIGNMENT with the volume-weighted aggregate direction.
+It does NOT prove:
+- Client data quality
+- Absence of adversarial behavior  
+- Statistical validity of client data
+- Convergence properties
+
+It is a HEURISTIC for detecting divergent updates that may harm global model quality.
 """
 
 import sys
@@ -80,13 +99,26 @@ class ATFedBNStrategy(FedAvg):
         self.round_trust_scores: Dict[int, Dict[str, float]] = {}
 
     def compute_cosine_similarity(self, v1: np.ndarray, v2: np.ndarray) -> float:
-        """Computes cosine similarity between two 1D vectors."""
+        """
+        Computes cosine similarity between two 1D vectors.
+        
+        Returns:
+            Cosine similarity in [-1, 1], or 1.0 if either vector has near-zero norm.
+            
+        Note: Returns 1.0 (perfect alignment) for zero-norm vectors as a safe default.
+        This prevents division by zero and treats zero updates as non-divergent.
+        """
         norm1 = np.linalg.norm(v1)
         norm2 = np.linalg.norm(v2)
+        
+        # Handle zero-norm vectors: treat as perfectly aligned (non-divergent)
         if norm1 < self.trust_epsilon or norm2 < self.trust_epsilon:
             return 1.0
+            
         dot_product = np.dot(v1, v2)
         sim = dot_product / (norm1 * norm2 + self.trust_epsilon)
+        
+        # Clip to valid range (numerical stability)
         return float(np.clip(sim, -1.0, 1.0))
 
     def aggregate_fit(
@@ -145,24 +177,32 @@ class ATFedBNStrategy(FedAvg):
         )
 
         # 4. Compute Trust Score via ReLU(CosineSimilarity(ΔW_i, ΔW_global))
+        # ReLU clipping: max(trust_floor, cos_sim) zeros-out negatively-aligned updates
         raw_trust_scores: List[float] = []
         for flat_delta in client_flat_deltas:
             cos_sim = self.compute_cosine_similarity(flat_delta, global_flat_delta)
-            # ReLU clipping: clips negative similarities to trust_floor (0.0)
+            # Apply ReLU: clip negative similarities to trust_floor (default 0.0)
             trust = max(self.trust_floor, cos_sim)
             raw_trust_scores.append(trust)
 
+        # 5. Normalize trust scores, with fallback to volume weights
         sum_trust = sum(raw_trust_scores)
         if sum_trust > self.trust_epsilon:
             trust_weights = np.array(
                 [t / sum_trust for t in raw_trust_scores], dtype=np.float64
             )
         else:
-            # Fallback to volume weights if all trust scores are zeroed
+            # Fallback: if all trust scores are ~0, use volume-only aggregation
+            # This handles edge cases like all-zero updates or all-negative similarities
             trust_weights = np.copy(volume_weights)
 
-        # 5. Hybrid Weight Normalization: (β * VolumeWeight) + ((1 - β) * TrustWeight)
+        # 6. Hybrid Weight Normalization: β * volume + (1-β) * trust
+        # β=1.0: pure volume weighting (FedAvg)
+        # β=0.0: pure trust weighting
+        # β=0.7: hybrid (70% volume, 30% trust)
         final_weights = (self.beta * volume_weights) + ((1.0 - self.beta) * trust_weights)
+        
+        # Ensure weights sum to 1.0 (numerical stability)
         final_weights = final_weights / np.sum(final_weights)
 
         # 6. Aggregate global parameters using final hybrid weights
