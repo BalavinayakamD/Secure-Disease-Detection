@@ -7,7 +7,7 @@ The project is fully configured and ready to run. All experiments have been exec
 ### Launch the Dashboard
 
 ```bash
-cd /home/tholvimaaran/Projects/Secure-Disease-Detection
+cd /home/<user>/Projects/Secure-Disease-Detection
 source .venv/bin/activate
 streamlit run ui/app.py
 ```
