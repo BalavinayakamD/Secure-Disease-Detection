@@ -839,6 +839,377 @@ with tab_demo:
                 st.exception(e)
     
     st.markdown('---')
+    
+    # ========================================================================
+    # LIVE PREDICTION FEATURE
+    # ========================================================================
+    
+    st.markdown('## 🔮 Disease Prediction')
+    
+    st.markdown("""
+    **Enter patient information below to predict cardiovascular disease risk using the trained federated model.**
+    
+    ⚠️ **Disclaimer**: This is an educational research prototype, not a clinically validated diagnostic tool.
+    Do not use for actual medical decisions.
+    """)
+    
+    # Load model and create prediction form
+    prediction_col1, prediction_col2 = st.columns([2, 1])
+    
+    with prediction_col1:
+        st.markdown('### Patient Information')
+        
+        # Create input form
+        with st.form("prediction_form"):
+            # Row 1: Demographics
+            demo_col1, demo_col2, demo_col3 = st.columns(3)
+            with demo_col1:
+                age_input = st.number_input(
+                    'Age (years)',
+                    min_value=18,
+                    max_value=100,
+                    value=50,
+                    step=1,
+                    help='Patient age in years'
+                )
+            with demo_col2:
+                gender_input = st.selectbox(
+                    'Gender',
+                    options=[1, 2],
+                    format_func=lambda x: 'Female' if x == 1 else 'Male',
+                    help='Biological sex (1=Female, 2=Male)'
+                )
+            with demo_col3:
+                height_input = st.number_input(
+                    'Height (cm)',
+                    min_value=100,
+                    max_value=250,
+                    value=170,
+                    step=1,
+                    help='Height in centimeters'
+                )
+            
+            # Row 2: Physical measurements
+            phys_col1, phys_col2 = st.columns(2)
+            with phys_col1:
+                weight_input = st.number_input(
+                    'Weight (kg)',
+                    min_value=30,
+                    max_value=300,
+                    value=75,
+                    step=1,
+                    help='Weight in kilograms'
+                )
+            with phys_col2:
+                bmi_calc = weight_input / ((height_input / 100) ** 2)
+                st.metric('BMI (calculated)', f'{bmi_calc:.1f}')
+            
+            # Row 3: Blood Pressure
+            st.markdown('**Blood Pressure**')
+            bp_col1, bp_col2 = st.columns(2)
+            with bp_col1:
+                ap_hi_input = st.number_input(
+                    'Systolic BP (mmHg)',
+                    min_value=50,
+                    max_value=300,
+                    value=120,
+                    step=5,
+                    help='Systolic blood pressure (upper number)'
+                )
+            with bp_col2:
+                ap_lo_input = st.number_input(
+                    'Diastolic BP (mmHg)',
+                    min_value=30,
+                    max_value=200,
+                    value=80,
+                    step=5,
+                    help='Diastolic blood pressure (lower number)'
+                )
+            
+            # Row 4: Lab results
+            st.markdown('**Lab Results**')
+            lab_col1, lab_col2 = st.columns(2)
+            with lab_col1:
+                cholesterol_input = st.selectbox(
+                    'Cholesterol Level',
+                    options=[1, 2, 3],
+                    format_func=lambda x: {1: 'Normal', 2: 'Above Normal', 3: 'Well Above Normal'}[x],
+                    help='1=Normal, 2=Above Normal, 3=Well Above Normal'
+                )
+            with lab_col2:
+                glucose_input = st.selectbox(
+                    'Glucose Level',
+                    options=[1, 2, 3],
+                    format_func=lambda x: {1: 'Normal', 2: 'Above Normal', 3: 'Well Above Normal'}[x],
+                    help='1=Normal, 2=Above Normal, 3=Well Above Normal'
+                )
+            
+            # Row 5: Lifestyle factors
+            st.markdown('**Lifestyle Factors**')
+            lifestyle_col1, lifestyle_col2, lifestyle_col3 = st.columns(3)
+            with lifestyle_col1:
+                smoke_input = st.selectbox(
+                    'Smoking',
+                    options=[0, 1],
+                    format_func=lambda x: 'No' if x == 0 else 'Yes',
+                    help='Current smoking status'
+                )
+            with lifestyle_col2:
+                alco_input = st.selectbox(
+                    'Alcohol',
+                    options=[0, 1],
+                    format_func=lambda x: 'No' if x == 0 else 'Yes',
+                    help='Regular alcohol consumption'
+                )
+            with lifestyle_col3:
+                active_input = st.selectbox(
+                    'Physical Activity',
+                    options=[0, 1],
+                    format_func=lambda x: 'No' if x == 0 else 'Yes',
+                    help='Regular physical activity'
+                )
+            
+            # Submit button
+            st.markdown('')
+            predict_button = st.form_submit_button('🔮 Predict Disease Risk', type='primary', use_container_width=True)
+    
+    with prediction_col2:
+        st.markdown('### Model Information')
+        st.info("""
+        **Model**: AT-FedBN CardioMLP
+        
+        **Architecture**:
+        - Input: 11 features
+        - Hidden: 64 → 32 neurons
+        - BatchNorm layers
+        - Dropout: 0.2
+        
+        **Training**:
+        - Federated across hospitals
+        - Privacy-preserving (local data)
+        - Differential privacy optional
+        
+        **Threshold**: 0.5
+        (predictions ≥ 0.5 = disease)
+        """)
+    
+    # Process prediction when button is clicked
+    if predict_button:
+        with st.spinner('Running prediction...'):
+            try:
+                # Import required modules
+                import torch
+                import numpy as np
+                import pandas as pd
+                from pathlib import Path
+                import sys
+                
+                # Ensure project root is in path
+                project_root = Path(__file__).resolve().parents[1]
+                if str(project_root) not in sys.path:
+                    sys.path.insert(0, str(project_root))
+                
+                from src.models.cardio_mlp import CardioMLP
+                from src.utils.scaler_utils import transform_raw_input
+                
+                # Collect input features in correct order
+                feature_names = ['age', 'gender', 'height', 'weight', 'ap_hi', 'ap_lo', 
+                               'cholesterol', 'gluc', 'smoke', 'alco', 'active']
+                
+                input_data = {
+                    'age': age_input,
+                    'gender': gender_input,
+                    'height': height_input,
+                    'weight': weight_input,
+                    'ap_hi': ap_hi_input,
+                    'ap_lo': ap_lo_input,
+                    'cholesterol': cholesterol_input,
+                    'gluc': glucose_input,
+                    'smoke': smoke_input,
+                    'alco': alco_input,
+                    'active': active_input
+                }
+                
+                # Display input summary
+                st.markdown('### Input Summary')
+                input_df = pd.DataFrame([input_data])
+                st.dataframe(input_df, use_container_width=True, hide_index=True)
+                
+                # Create feature array in correct order
+                features = np.array([[input_data[f] for f in feature_names]], dtype=np.float32)
+                
+                # Scale the raw input using the scaler utility
+                try:
+                    features_scaled = transform_raw_input(
+                        features,
+                        use_hospital_scaler=False,  # Use default stats (hospital data is already scaled)
+                        num_hospitals=cfg['data']['num_clients']
+                    )
+                except Exception as e:
+                    st.error(f'❌ Error scaling input features: {e}')
+                    st.stop()
+                
+                # Load the trained model
+                model_paths = [
+                    project_root / 'outputs' / 'models' / 'at_fedbn_final.pth',
+                    project_root / 'outputs' / 'models' / 'at_fedbn_ui_live_demo.pth',
+                    project_root / 'outputs' / 'models' / 'fedavg_baseline_final.pth',
+                ]
+                
+                model_path = None
+                model_name = None
+                for path in model_paths:
+                    if path.exists():
+                        model_path = path
+                        model_name = path.stem
+                        break
+                
+                if model_path is None:
+                    st.error('❌ No trained model checkpoint found.')
+                    st.info("""
+                    **Missing Model Checkpoint**
+                    
+                    To use the prediction feature, you need to run one of the training experiments first:
+                    - `python experiments/04_full_at_fedbn.py` (recommended)
+                    - `python experiments/03_fedbn_only.py`
+                    - `python experiments/02_fedavg_baseline.py`
+                    
+                    This will generate a trained model checkpoint in `outputs/models/`.
+                    """)
+                    st.stop()
+                
+                # Load model
+                st.info(f'Using model: **{model_name}**')
+                
+                model = CardioMLP(
+                    input_dim=cfg['model']['input_dim'],
+                    hidden_dims=tuple(cfg['model']['hidden_dims']),
+                    dropout=cfg['model']['dropout']
+                )
+                
+                checkpoint = torch.load(model_path, map_location='cpu')
+                
+                # Handle different checkpoint formats
+                if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+                    model.load_state_dict(checkpoint['model_state_dict'])
+                elif isinstance(checkpoint, dict) and any(k.startswith('fc') or k.startswith('bn') for k in checkpoint.keys()):
+                    model.load_state_dict(checkpoint)
+                else:
+                    st.error(f'❌ Unrecognized checkpoint format in {model_path}')
+                    st.stop()
+                
+                model.eval()
+                
+                # Run inference
+                with torch.no_grad():
+                    input_tensor = torch.from_numpy(features_scaled).float()
+                    logit = model(input_tensor)
+                    probability = torch.sigmoid(logit).item()
+                    prediction = 1 if probability >= 0.5 else 0
+                
+                # Display results
+                st.markdown('---')
+                st.markdown('## 🎯 Prediction Results')
+                
+                # Main prediction display
+                if prediction == 1:
+                    st.error('### ⚠️ **DISEASE DETECTED**')
+                    st.markdown('**The model predicts a HIGH RISK of cardiovascular disease.**')
+                else:
+                    st.success('### ✅ **NO DISEASE DETECTED**')
+                    st.markdown('**The model predicts a LOW RISK of cardiovascular disease.**')
+                
+                # Probability display
+                result_col1, result_col2 = st.columns(2)
+                
+                with result_col1:
+                    st.metric(
+                        'Disease Probability',
+                        f'{probability * 100:.1f}%',
+                        delta=None,
+                        help='Model confidence in positive disease prediction'
+                    )
+                
+                with result_col2:
+                    st.metric(
+                        'Classification Threshold',
+                        '50.0%',
+                        delta=None,
+                        help='Predictions ≥ 50% are classified as disease'
+                    )
+                
+                # Visual probability bar
+                st.markdown('### Confidence Visualization')
+                st.progress(probability, text=f'Disease Probability: {probability*100:.1f}%')
+                
+                # Interpretation guide
+                st.markdown('### Interpretation Guide')
+                if probability >= 0.8:
+                    risk_level = '🔴 **Very High Risk**'
+                    recommendation = 'Immediate medical consultation strongly recommended.'
+                elif probability >= 0.6:
+                    risk_level = '🟠 **High Risk**'
+                    recommendation = 'Medical consultation recommended. Monitor cardiovascular health closely.'
+                elif probability >= 0.4:
+                    risk_level = '🟡 **Moderate Risk**'
+                    recommendation = 'Consider lifestyle modifications and regular check-ups.'
+                elif probability >= 0.2:
+                    risk_level = '🟢 **Low Risk**'
+                    recommendation = 'Maintain healthy lifestyle. Regular preventive care advised.'
+                else:
+                    risk_level = '🟢 **Very Low Risk**'
+                    recommendation = 'Continue healthy habits. Routine health monitoring sufficient.'
+                
+                st.markdown(f'**Risk Level**: {risk_level}')
+                st.markdown(f'**Recommendation**: {recommendation}')
+                
+                # Important notes
+                st.markdown('---')
+                st.warning("""
+                **Important Notes**:
+                - This prediction is based on a research model trained on historical data
+                - It should NOT replace professional medical diagnosis
+                - Always consult healthcare professionals for medical decisions
+                - Model accuracy on test data: ~73% (see Training Results tab)
+                - Individual predictions may vary in accuracy
+                """)
+                
+                # Feature importance (simple heuristic)
+                st.markdown('### Input Feature Summary')
+                risk_factors = []
+                if ap_hi_input >= 140 or ap_lo_input >= 90:
+                    risk_factors.append('⚠️ High blood pressure detected')
+                if cholesterol_input >= 2:
+                    risk_factors.append('⚠️ Elevated cholesterol')
+                if glucose_input >= 2:
+                    risk_factors.append('⚠️ Elevated glucose')
+                if smoke_input == 1:
+                    risk_factors.append('⚠️ Smoking habit')
+                if bmi_calc >= 30:
+                    risk_factors.append('⚠️ High BMI (≥30)')
+                if active_input == 0:
+                    risk_factors.append('⚠️ Sedentary lifestyle')
+                if age_input >= 60:
+                    risk_factors.append('⚠️ Advanced age (≥60)')
+                
+                if risk_factors:
+                    st.markdown('**Risk Factors Present**:')
+                    for factor in risk_factors:
+                        st.markdown(f'- {factor}')
+                else:
+                    st.markdown('✅ No major risk factors detected in input data')
+                
+            except Exception as e:
+                st.error(f'❌ Prediction failed: {str(e)}')
+                st.exception(e)
+                st.info("""
+                **Troubleshooting**:
+                1. Ensure experiments have been run to generate model checkpoints
+                2. Check that hospital data exists in `data/processed/`
+                3. Verify model architecture matches config.yaml
+                """)
+    
+    st.markdown('---')
     st.markdown('### Experiment Execution')
     st.markdown("""
     To run the complete experiment suite outside this dashboard:
