@@ -1,1260 +1,613 @@
-"""
-AT-FedBN Research Dashboard
+"""AT-FedBN cardiovascular research prototype dashboard.
 
-A professional web interface for the Adaptive Trust-Weighted Federated Batch
-Normalization project, showcasing federated learning with differential privacy
-on cardiovascular disease prediction across non-IID hospital data.
-
-Usage:
-    streamlit run ui/app.py
+Run with ``streamlit run ui/app.py`` from the project root.
 """
 
 import json
+import html
 import os
 import sys
 from pathlib import Path
 
-project_root = str(Path(__file__).resolve().parents[1])
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 import pandas as pd
 import streamlit as st
 import yaml
 
-RESULTS_DIR = 'outputs/results'
-GRAPHS_DIR = 'outputs/graphs'
-DATA_DIR = 'data/processed'
+st.set_page_config(page_title="Cardiovascular Risk Assessment | AT-FedBN", page_icon="+",
+                   layout="wide", initial_sidebar_state="collapsed")
 
-# ============================================================================
-# Data Loading Functions
-# ============================================================================
+theme = st.session_state.get("ui_theme", "Dark")
+if theme == "Dark":
+    palette = {"app": "#0b1220", "surface": "#111c2e", "surface2": "#172438", "text": "#f1f5f9",
+               "muted": "#9aacc0", "line": "#293a50", "accent": "#4fd1c5", "accent_text": "#08211f",
+               "info": "#102b34", "warn": "#352918", "error": "#351f27", "success": "#183128",
+               "grid": "#293a50", "bar1": "#4fd1c5", "bar2": "#7da5e8", "bar3": "#e4a66a", "bar4": "#b39ad7"}
+else:
+    palette = {"app": "#f7f9fb", "surface": "#ffffff", "surface2": "#edf3f6", "text": "#1d2b36",
+               "muted": "#536675", "line": "#d5e0e7", "accent": "#087f8c", "accent_text": "#ffffff",
+               "info": "#eaf3f6", "warn": "#fff3dc", "error": "#fbeaec", "success": "#e8f4ed",
+               "grid": "#d9e2e8", "bar1": "#087f8c", "bar2": "#4d6f9e", "bar3": "#9a6335", "bar4": "#73568f"}
 
-def get_project_root():
-    """Get absolute path to project root."""
-    return Path(__file__).resolve().parents[1]
-
-
-def resolve_path(relative_path):
-    """Resolve a path relative to project root."""
-    return str(get_project_root() / relative_path)
-
-
-def load_json(filename):
-    """Load a JSON result file if it exists."""
-    path = resolve_path(os.path.join(RESULTS_DIR, filename))
-    if os.path.exists(path):
-        try:
-            with open(path) as f:
-                return json.load(f)
-        except (json.JSONDecodeError, IOError):
-            return None
-    return None
-
-
-def load_config():
-    """Load the project configuration."""
-    path = resolve_path('config.yaml')
-    with open(path) as f:
-        return yaml.safe_load(f)
-
-
-def count_available_experiments():
-    """Count how many experiment result files exist."""
-    experiments = [
-        'central_baseline.json',
-        'fedavg_baseline.json',
-        'fedbn_only.json',
-        'at_fedbn.json'
-    ]
-    results_path = resolve_path(RESULTS_DIR)
-    count = sum(1 for exp in experiments if os.path.exists(os.path.join(results_path, exp)))
-    return count
-
-
-def get_dataset_statistics(cfg):
-    """Calculate actual dataset statistics from config and files."""
-    stats = {
-        'num_hospitals': cfg['data']['num_clients'],
-        'total_train': 0,
-        'total_test': 0,
-        'hospital_details': []
-    }
-    
-    data_dir = resolve_path(cfg['data']['processed_dir'])
-    
-    for i in range(cfg['data']['num_clients']):
-        train_path = os.path.join(data_dir, f'hospital_{i}_train.csv')
-        test_path = os.path.join(data_dir, f'hospital_{i}_test.csv')
-        
-        if os.path.exists(train_path) and os.path.exists(test_path):
-            train_df = pd.read_csv(train_path)
-            test_df = pd.read_csv(test_path)
-            
-            stats['total_train'] += len(train_df)
-            stats['total_test'] += len(test_df)
-            stats['hospital_details'].append({
-                'id': i,
-                'train_samples': len(train_df),
-                'test_samples': len(test_df),
-                'positive_rate_train': train_df['cardio'].mean(),
-                'positive_rate_test': test_df['cardio'].mean()
-            })
-    
-    return stats
-
-
-def get_epsilon_from_noise_scale(noise_scale, sensitivity=1.0, delta=1e-5, steps=10):
-    """
-    Estimate privacy budget epsilon from noise scale.
-    
-    This is a simplified RDP accountant approximation.
-    """
-    if noise_scale is None or noise_scale == 0:
-        return None
-    
-    # Approximate epsilon using RDP composition
-    # For Gaussian mechanism with noise_scale sigma:
-    # epsilon ≈ steps * (sensitivity^2 / (2 * sigma^2))
-    
-    try:
-        epsilon = steps * (sensitivity ** 2) / (2 * noise_scale ** 2)
-        return epsilon
-    except (ZeroDivisionError, TypeError):
-        return None
-
-
-def format_epsilon(epsilon):
-    """Format epsilon value for display with privacy level."""
-    if epsilon is None:
-        return "∞ (No DP)", "None"
-    elif epsilon >= 100:
-        return f"{epsilon:,.0f}", "❌ Very Weak"
-    elif epsilon >= 10:
-        return f"{epsilon:.1f}", "⚠️ Weak"
-    elif epsilon >= 1:
-        return f"{epsilon:.2f}", "⚠️ Moderate"
-    else:
-        return f"{epsilon:.3f}", "✅ Strong"
-
-# ============================================================================
-# Page Configuration
-# ============================================================================
-
-st.set_page_config(
-    page_title='AT-FedBN Research Dashboard',
-    page_icon='🏥',
-    layout='wide',
-    initial_sidebar_state='expanded'
-)
-
-# ============================================================================
-# Styling
-# ============================================================================
-
-st.markdown("""
+st.markdown(f"""
 <style>
-    /* Clean, professional typography */
-    .main .block-container {
-        padding-top: 2rem;
-        padding-bottom: 2rem;
-        max-width: 1400px;
-    }
-    
-    h1 {
-        color: #1f2937;
-        font-weight: 600;
-        margin-bottom: 0.5rem;
-    }
-    
-    h2 {
-        color: #374151;
-        font-weight: 600;
-        margin-top: 2rem;
-        margin-bottom: 1rem;
-        border-bottom: 2px solid #e5e7eb;
-        padding-bottom: 0.5rem;
-    }
-    
-    h3 {
-        color: #4b5563;
-        font-weight: 500;
-        margin-top: 1.5rem;
-    }
-    
-    /* Metric cards */
-    [data-testid="stMetricValue"] {
-        font-size: 2rem;
-        font-weight: 600;
-    }
-    
-    /* Tables */
-    .dataframe {
-        font-size: 0.95rem;
-    }
-    
-    /* Remove excessive spacing */
-    .element-container {
-        margin-bottom: 0.5rem;
-    }
-    
-    /* Info boxes */
-    .stAlert {
-        margin-top: 1rem;
-        margin-bottom: 1rem;
-    }
-    
-    /* Tabs */
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 2rem;
-    }
-    
-    .stTabs [data-baseweb="tab"] {
-        padding: 1rem 1.5rem;
-        font-weight: 500;
-    }
+:root {{ --app:{palette['app']}; --surface:{palette['surface']}; --surface2:{palette['surface2']};
+--text:{palette['text']}; --muted:{palette['muted']}; --line:{palette['line']}; --accent:{palette['accent']};
+--accent-text:{palette['accent_text']}; --info:{palette['info']}; --warn:{palette['warn']};
+--error:{palette['error']}; --success:{palette['success']}; }}
+.stApp, [data-testid="stAppViewContainer"] {{ background:var(--app); color:var(--text); }}
+.main .block-container {{ max-width:1240px; padding-top:.65rem; padding-bottom:2.5rem; }}
+.stApp, .stApp p, .stApp label, .stApp li, .stApp small {{ color:var(--text); }}
+h1,h2,h3,h4 {{ color:var(--text) !important; letter-spacing:-.02em; }}
+h1 {{ font-size:2.15rem; }} h2 {{ font-size:1.4rem; margin-top:1.1rem; }}
+.eyebrow {{ color:var(--accent); font-size:.72rem; font-weight:700; letter-spacing:.1em; text-transform:uppercase; }}
+.subtle {{ color:var(--muted) !important; font-size:1rem; line-height:1.55; }}
+.notice,.result-card,.step-detail {{ background:var(--surface); color:var(--text); border:1px solid var(--line); border-radius:10px; }}
+.notice {{ background:var(--info); border-left:4px solid var(--accent); padding:.7rem .9rem; margin:.55rem 0 1rem; }}
+.status-message {{ border:1px solid var(--line); border-left:4px solid; border-radius:8px; padding:.65rem .85rem; margin:.45rem 0 .8rem; color:var(--text); }}
+.status-info {{ background:var(--info); border-left-color:var(--accent); }}
+.status-warning {{ background:var(--warn); border-left-color:#ad792c; }}
+.status-error {{ background:var(--error); border-left-color:#b34e58; }}
+.status-success {{ background:var(--success); border-left-color:#31805c; }}
+.result-card {{ padding:1.05rem 1.2rem; margin:.5rem 0; }}
+.step-detail {{ background:var(--surface2); padding:.65rem .85rem; margin:.45rem 0 .9rem; }}
+.step-detail p {{ margin:0; color:var(--text); }}
+section[data-testid="stSidebar"] {{ display:none; }}
+[data-testid="stMetric"] {{ background:var(--surface); border:1px solid var(--line); padding:.65rem .85rem; border-radius:9px; }}
+[data-testid="stMetricLabel"], [data-testid="stCaptionContainer"] {{ color:var(--muted) !important; }}
+[data-testid="stWidgetLabel"] p {{ color:var(--text) !important; }}
+pre, code {{ color:var(--text); background:var(--surface2); }}
+[data-testid="stHeader"] {{ background:var(--app); }}
+input[type="radio"] {{ accent-color:var(--accent); }}
+input, textarea, [data-baseweb="select"] > div, [data-baseweb="input"] > div {{ background:var(--surface) !important; color:var(--text) !important; border-color:var(--line) !important; }}
+[data-baseweb="popover"], [role="listbox"], [role="option"] {{ background:var(--surface) !important; color:var(--text) !important; }}
+[role="option"]:hover {{ background:var(--surface2) !important; }}
+.stButton > button {{ background:var(--surface); color:var(--text); border:1px solid var(--line); border-radius:8px; min-height:2.45rem; }}
+.stButton > button:hover {{ border-color:var(--accent); color:var(--accent); }}
+.stButton > button[kind="primary"] {{ background:var(--accent); color:var(--accent-text); border-color:var(--accent); }}
+.stButton > button[kind="primary"]:hover {{ background:var(--accent); color:var(--accent-text); filter:brightness(.94); }}
+.stFormSubmitButton > button {{ background:var(--accent); color:var(--accent-text); border-color:var(--accent); font-weight:700; }}
+.stFormSubmitButton > button:hover {{ background:var(--accent); color:var(--accent-text); filter:brightness(.94); }}
+[data-testid="stAlert"] {{ color:var(--text); background:var(--surface2); border-color:var(--line); }}
+[data-testid="stAlert"] p {{ color:var(--text) !important; }}
+div[data-testid="stAlert"]:has(svg[viewBox]) {{ border-radius:9px; }}
+.flow-lane {{ color:var(--muted); font-size:.72rem; font-weight:700; text-transform:uppercase; letter-spacing:.08em; margin:.5rem 0 .25rem; }}
+.flow-arrow {{ color:var(--accent); font-size:1.2rem; font-weight:700; text-align:center; padding-top:1.05rem; }}
+.flow-turn {{ color:var(--accent); font-size:1.1rem; font-weight:700; text-align:right; padding-right:8%; margin:-.4rem 0; }}
+.architecture-label {{ color:var(--muted); font-size:.78rem; }}
+.stButton > button {{ white-space:pre-line; line-height:1.25; }}
+.site-brand {{ color:var(--text); font-size:1.05rem; font-weight:800; letter-spacing:-.03em; padding:.38rem 0; }}
+.site-brand span {{ display:block; color:var(--muted); font-size:.68rem; font-weight:500; letter-spacing:.02em; margin-top:2px; }}
+.stForm {{ background:var(--surface); border:1px solid var(--line); border-radius:14px; padding:1rem 1.1rem; }}
+.data-table-wrap {{ overflow-x:auto; border:1px solid var(--line); border-radius:8px; margin:.3rem 0 .7rem; }}
+table.data-table {{ width:100%; border-collapse:collapse; color:var(--text); background:var(--surface); font-size:.86rem; }}
+.data-table th {{ text-align:left; color:var(--text); background:var(--surface2); font-weight:700; }}
+.data-table th,.data-table td {{ padding:.55rem .7rem; border-bottom:1px solid var(--line); }}
+.data-table tr:last-child td {{ border-bottom:0; }}
+.chart-card {{ background:var(--surface); border:1px solid var(--line); border-radius:10px; padding:.55rem .7rem; margin:.4rem 0 .8rem; }}
+.chart-card svg {{ display:block; width:100%; height:auto; }}
+.chart-title {{ fill:var(--text); font:600 14px sans-serif; }}
+.chart-label {{ fill:var(--text); font:12px sans-serif; }}
+.chart-muted {{ fill:var(--muted); font:11px sans-serif; }}
+.chart-grid {{ stroke:{palette['grid']}; stroke-width:1; }}
+.bar-0 {{ fill:{palette['bar1']}; }} .bar-1 {{ fill:{palette['bar2']}; }} .bar-2 {{ fill:{palette['bar3']}; }} .bar-3 {{ fill:{palette['bar4']}; }}
+.prob-track {{ background:var(--surface2); border-radius:99px; height:12px; overflow:hidden; margin:.4rem 0; }}
+.prob-fill {{ background:var(--accent); height:100%; border-radius:99px; }}
+@media (max-width:700px) {{ .main .block-container {{padding-left:1rem;padding-right:1rem;}} h1 {{font-size:1.75rem;}} }}
 </style>
 """, unsafe_allow_html=True)
 
-# ============================================================================
-# Utility Functions
-# ============================================================================
 
-def format_metric(value, format_type='float'):
-    """Format a metric value for display."""
-    if value is None:
-        return '—'
-    if format_type == 'float':
-        return f'{value:.4f}'
-    elif format_type == 'percent':
-        return f'{value*100:.2f}%'
-    elif format_type == 'int':
-        return f'{int(value):,}'
-    return str(value)
+def project_path(path):
+    return PROJECT_ROOT / path
 
 
-def get_image_path(filename):
-    """Get the full path to a graph image."""
-    path = resolve_path(os.path.join(GRAPHS_DIR, filename))
-    return path if os.path.exists(path) else None
+@st.cache_data(show_spinner=False)
+def read_json(name):
+    path = project_path("outputs/results") / name
+    try:
+        with path.open() as stream:
+            return json.load(stream)
+    except (OSError, json.JSONDecodeError):
+        return None
 
-# ============================================================================
-# Header
-# ============================================================================
 
-st.title('AT-FedBN: Adaptive Trust-Weighted Federated Batch Normalization')
+@st.cache_data(show_spinner=False)
+def read_config():
+    try:
+        with project_path("config.yaml").open() as stream:
+            return yaml.safe_load(stream) or {}
+    except (OSError, yaml.YAMLError):
+        return {}
 
-st.markdown("""
-<div style="background: #f9fafb; padding: 1.5rem; border-radius: 0.5rem; border-left: 4px solid #3b82f6; margin-bottom: 2rem;">
-    <strong>Privacy-preserving federated learning for cardiovascular disease prediction</strong><br/>
-    Combining trust-weighted aggregation, local batch normalization, and differential privacy
-    to enable collaborative learning across hospitals without sharing patient data.
-</div>
-""", unsafe_allow_html=True)
 
-# Load configuration
-cfg = load_config()
+@st.cache_data(show_spinner="Reading dataset summaries…")
+def dataset_summary(num_clients):
+    rows, total_train, total_test = [], 0, 0
+    root = project_path("data/processed")
+    for client in range(num_clients):
+        train_path, test_path = root / f"hospital_{client}_train.csv", root / f"hospital_{client}_test.csv"
+        if not train_path.exists() or not test_path.exists():
+            continue
+        train, test = pd.read_csv(train_path), pd.read_csv(test_path)
+        if "cardio" not in train or "cardio" not in test:
+            continue
+        rows.append({"Hospital": f"Hospital {client + 1}", "Training samples": len(train),
+                     "Test samples": len(test), "Training positive rate": train.cardio.mean(),
+                     "Test positive rate": test.cardio.mean()})
+        total_train += len(train)
+        total_test += len(test)
+    return rows, total_train, total_test
 
-# Get dynamic dataset statistics
-dataset_stats = get_dataset_statistics(cfg)
 
-# Count available experiments
-experiments_completed = count_available_experiments()
+def metric_value(result, location, name):
+    node = result or {}
+    for part in location.split("."):
+        node = node.get(part, {}) if isinstance(node, dict) else {}
+    value = node.get(name) if isinstance(node, dict) else None
+    return value if isinstance(value, (int, float)) else None
 
-# Calculate privacy parameters
-noise_scale = cfg['privacy'].get('noise_scale', 0)
-estimated_epsilon = get_epsilon_from_noise_scale(
-    noise_scale, 
-    steps=cfg['federated']['num_rounds']
-)
-epsilon_str, privacy_level = format_epsilon(estimated_epsilon)
 
-# ============================================================================
-# Main Navigation Tabs
-# ============================================================================
+def pct(value):
+    return "Unavailable" if value is None else f"{value:.1%}"
 
-tab_overview, tab_data, tab_training, tab_trust, tab_comparison, tab_demo = st.tabs([
-    '📋 Overview',
-    '🏥 Hospital Data',
-    '🔄 Training Results',
-    '🔒 Trust Mechanism',
-    '📊 Model Comparison',
-    '⚡ Live Demo'
-])
 
-# ============================================================================
-# TAB 1: Overview
-# ============================================================================
+def status_message(kind, message):
+    if kind not in {"info", "warning", "error", "success"}:
+        kind = "info"
+    st.markdown(f'<div class="status-message status-{kind}">{html.escape(str(message))}</div>', unsafe_allow_html=True)
 
-with tab_overview:
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        st.markdown('## Research Objective')
-        st.markdown("""
-        This project addresses a critical challenge in healthcare AI: how can multiple
-        hospitals collaboratively train a disease prediction model without sharing
-        sensitive patient data?
-        
-        **Key Innovation:** AT-FedBN combines three techniques:
-        - **Federated Learning**: Models train locally, only sharing parameter updates
-        - **Trust-Weighted Aggregation**: Low-quality client updates receive lower weight
-        - **Local BatchNorm**: Each hospital retains domain-specific normalization statistics
-        - **Differential Privacy**: Noise protects individual patient privacy (optional)
-        """)
-        
-        st.markdown('### System Architecture')
-        st.code(f"""
-Hospital Data (Non-IID, Privacy-Sensitive)
-    ↓
-Local Model Training (CardioMLP)
-    ↓ ({cfg['training']['local_epochs']} epochs per round)
-Extract Shared Parameters (fc1, fc2, fc3 weights)
-    ↓
-Apply Differential Privacy (Gaussian noise, σ={cfg['privacy'].get('noise_scale', 'N/A')})
-    ↓
-Send to Central Server
-    ↓
-Calculate Trust Scores (cosine similarity with global trend)
-    ↓
-Hybrid Aggregation (β·volume + (1-β)·trust, β={cfg['federated'].get('beta', 0.7)})
-    ↓
-Broadcast Updated Global Parameters
-    ↓
-Merge with Local BatchNorm (stays on hospital side)
-    ↓
-Next Training Round
-        """, language='text')
-    
-    with col2:
-        st.markdown('## Project Status')
-        
-        # Load summary statistics
-        summary = load_json('summary_statistics.json')
-        
-        st.metric('Experiments Complete', experiments_completed)
-        
-        if summary:
-            st.metric('Training Rounds', summary.get('num_fl_rounds', cfg['federated']['num_rounds']))
-            st.metric('Hospitals', summary.get('num_hospitals', cfg['data']['num_clients']))
-            total_samples = summary.get('total_training_samples', 0) + summary.get('total_test_samples', 0)
-            if total_samples == 0:
-                total_samples = dataset_stats['total_train'] + dataset_stats['total_test']
-            st.metric('Total Samples', format_metric(total_samples, 'int'))
-        else:
-            st.metric('Training Rounds', cfg['federated']['num_rounds'])
-            st.metric('Hospitals', cfg['data']['num_clients'])
-            total_samples = dataset_stats['total_train'] + dataset_stats['total_test']
-            if total_samples > 0:
-                st.metric('Total Samples', format_metric(total_samples, 'int'))
-            else:
-                st.metric('Total Samples', 'N/A')
-        
-        st.markdown('### Model Architecture')
-        st.markdown(f"""
-        - **Input Dimension**: {cfg['model']['input_dim']} features
-        - **Hidden Layers**: {cfg['model']['hidden_dims']}
-        - **Dropout**: {cfg['model']['dropout']}
-        - **Batch Norm Layers**: {', '.join(cfg['model']['bn_layers'])}
-        """)
-        
-        st.markdown('### Training Configuration')
-        st.markdown(f"""
-        - **Local Epochs**: {cfg['training']['local_epochs']} per round
-        - **Batch Size**: {cfg['training']['batch_size']}
-        - **Learning Rate**: {cfg['training']['learning_rate']}
-        - **DP Noise (σ)**: {cfg['privacy'].get('noise_scale', 'N/A')}
-        - **Gradient Clip (C)**: {cfg['privacy'].get('clip_norm', 'N/A')}
-        """)
-    
-    # Results Summary Table
-    st.markdown('## Performance Summary')
-    
-    master_table_path = resolve_path(os.path.join(RESULTS_DIR, 'master_table.md'))
-    if os.path.exists(master_table_path):
-        with open(master_table_path) as f:
-            st.markdown(f.read())
-    else:
-        st.info('Run `python experiments/compare_all.py` to generate comprehensive results table.')
-    
-    # Key Findings
-    summary = load_json('summary_statistics.json')
-    if summary and 'performance_comparison' in summary:
-        st.markdown('## Key Findings')
-        
-        perf = summary['performance_comparison']
-        central = perf.get('Centralized', {})
-        at_fedbn = perf.get('AT-FedBN', {})
-        
-        if central and at_fedbn:
-            col1, col2, col3, col4 = st.columns(4)
-            
-            with col1:
-                st.metric(
-                    'ROC-AUC',
-                    format_metric(at_fedbn.get('roc_auc')),
-                    delta=format_metric(at_fedbn.get('roc_auc', 0) - central.get('roc_auc', 0)),
-                    help='AT-FedBN vs. Centralized baseline'
-                )
-            
-            with col2:
-                st.metric(
-                    'Balanced Accuracy',
-                    format_metric(at_fedbn.get('balanced_accuracy')),
-                    delta=format_metric(at_fedbn.get('balanced_accuracy', 0) - central.get('balanced_accuracy', 0)),
-                    help='AT-FedBN vs. Centralized baseline'
-                )
-            
-            with col3:
-                st.metric(
-                    'F1 Score',
-                    format_metric(at_fedbn.get('f1')),
-                    delta=format_metric(at_fedbn.get('f1', 0) - central.get('f1', 0)),
-                    help='AT-FedBN vs. Centralized baseline'
-                )
-            
-            with col4:
-                st.metric(
-                    'Accuracy',
-                    format_metric(at_fedbn.get('accuracy')),
-                    delta=format_metric(at_fedbn.get('accuracy', 0) - central.get('accuracy', 0)),
-                    help='AT-FedBN vs. Centralized baseline'
-                )
-            
-            st.markdown("""
-            **Interpretation**: AT-FedBN achieves comparable (or in some metrics, superior) performance
-            to centralized training while maintaining patient privacy through local training and
-            differential privacy.
-            """)
-        else:
-            st.info('Complete experiments to see performance comparison.')
-    else:
-        st.info('Run experiments to see performance metrics.')
 
-# ============================================================================
-# TAB 2: Hospital Data Distribution
-# ============================================================================
+def select_button_value(state_key, value):
+    st.session_state[state_key] = value
 
-with tab_data:
-    st.markdown('## Non-IID Data Distribution')
-    
-    st.markdown("""
-    Real-world hospital data is **non-IID** (not independent and identically distributed).
-    Different hospitals see different patient populations, leading to varying disease
-    prevalence and feature distributions.
-    """)
-    
-    # Distribution visualization
-    dist_img = get_image_path('data_distribution.png')
-    if dist_img:
-        st.image(dist_img, use_container_width=True, 
-                caption='Class distribution across hospitals (Dirichlet α=1.0)')
-    
-    # Hospital statistics table
-    st.markdown('### Hospital-Level Statistics')
-    
-    rows = []
-    for i in range(cfg['data']['num_clients']):
-        train_file = os.path.join(DATA_DIR, f'hospital_{i}_train.csv')
-        test_file = os.path.join(DATA_DIR, f'hospital_{i}_test.csv')
-        
-        if os.path.exists(train_file) and os.path.exists(test_file):
-            df_train = pd.read_csv(train_file)
-            df_test = pd.read_csv(test_file)
-            
-            rows.append({
-                'Hospital': f'Hospital {i}',
-                'Train Samples': len(df_train),
-                'Test Samples': len(df_test),
-                'Total': len(df_train) + len(df_test),
-                'Positive Rate (Train)': f'{df_train.cardio.mean():.1%}',
-                'Positive Rate (Test)': f'{df_test.cardio.mean():.1%}',
-                'Skew': 'High' if abs(df_train.cardio.mean() - 0.5) > 0.2 else 'Moderate'
-            })
-    
-    if rows:
-        df_hospitals = pd.DataFrame(rows)
-        st.dataframe(df_hospitals, use_container_width=True, hide_index=True)
-        
-        st.markdown("""
-        **Non-IID Challenge**: Notice the varying positive rates across hospitals. A model
-        trained only on Hospital 1's high-prevalence population may perform poorly on
-        Hospital 2's different distribution. FedBN addresses this by keeping batch
-        normalization statistics local to each hospital.
-        """)
-    else:
-        # Show stats from result files if CSV files don't exist
-        at_fedbn_data = load_json('at_fedbn.json')
-        fedbn_data = load_json('fedbn_only.json')
-        
-        data_to_use = at_fedbn_data or fedbn_data
-        
-        if data_to_use and 'local' in data_to_use and 'per_hospital' in data_to_use['local']:
-            st.info('Processed hospital data files not found. Showing statistics from experiment results.')
-            
-            for hospital, metrics in sorted(data_to_use['local']['per_hospital'].items()):
-                st.markdown(f"**{hospital.replace('_', ' ').title()}**")
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric('Majority Baseline', format_metric(metrics.get('majority_baseline'), 'percent'))
-                with col2:
-                    st.metric('Balanced Accuracy', format_metric(metrics.get('balanced_accuracy')))
-                with col3:
-                    st.metric('ROC-AUC', format_metric(metrics.get('roc_auc')))
-        else:
-            st.warning('Run data preprocessing to generate hospital-specific datasets.')
-    
-    # Local performance by hospital
-    st.markdown('### Local Model Performance')
-    
-    local_perf_img = get_image_path('local_balanced_accuracy_by_hospital.png')
-    if local_perf_img:
-        st.image(local_perf_img, use_container_width=True,
-                caption='Each bar shows balanced accuracy minus the majority baseline')
-    else:
-        st.info('Run experiments to generate hospital-wise performance comparison.')
 
-# ============================================================================
-# TAB 3: Training Results
-# ============================================================================
+def button_choices(options, state_key, columns_per_row=3):
+    """Small persistent button set that changes the displayed chart."""
+    st.session_state.setdefault(state_key, options[0])
+    if st.session_state[state_key] not in options:
+        st.session_state[state_key] = options[0]
+    selected = st.session_state[state_key]
+    for start in range(0, len(options), columns_per_row):
+        row = options[start:start + columns_per_row]
+        columns = st.columns(len(row), gap="small")
+        for offset, option in enumerate(row):
+            index = start + offset
+            with columns[offset]:
+                st.button(option, key=f"{state_key}_choice_{index}",
+                          type="primary" if option == selected else "secondary",
+                          use_container_width=True, on_click=select_button_value,
+                          args=(state_key, option))
+    return st.session_state[state_key]
 
-with tab_training:
-    st.markdown('## Federated Training Convergence')
-    
-    # Convergence plots
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        conv_roc = get_image_path('convergence_roc_auc.png')
-        if conv_roc:
-            st.image(conv_roc, use_container_width=True, caption='ROC-AUC over training rounds')
-        else:
-            st.info('Run experiments to generate convergence plots.')
-    
-    with col2:
-        conv_bal = get_image_path('convergence_balanced_accuracy.png')
-        if conv_bal:
-            st.image(conv_bal, use_container_width=True, 
-                    caption='Balanced Accuracy over training rounds')
-    
-    # All metrics convergence
-    st.markdown('### Complete Metrics Progression')
-    conv_all = get_image_path('convergence_all_metrics.png')
-    if conv_all:
-        st.image(conv_all, use_container_width=True)
-    
-    # Detailed results
-    st.markdown('### Detailed Training Results')
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.markdown('#### FedBN Only')
-        fedbn_data = load_json('fedbn_only.json')
-        if fedbn_data and 'local' in fedbn_data:
-            local_results = fedbn_data['local']
-            avg_metrics = local_results.get('average', {})
-            st.metric('Avg ROC-AUC', format_metric(avg_metrics.get('roc_auc')))
-            st.metric('Avg Balanced Acc', format_metric(avg_metrics.get('balanced_accuracy')))
-            st.metric('Training Rounds', fedbn_data.get('num_rounds', 'N/A'))
-        else:
-            st.info('Run Experiment 03 (FedBN Only)')
-    
-    with col2:
-        st.markdown('#### AT-FedBN (Full System)')
-        at_fedbn_data = load_json('at_fedbn.json')
-        if at_fedbn_data and 'local' in at_fedbn_data:
-            local_results = at_fedbn_data['local']
-            avg_metrics = local_results.get('average', {})
-            st.metric('Avg ROC-AUC', format_metric(avg_metrics.get('roc_auc')))
-            st.metric('Avg Balanced Acc', format_metric(avg_metrics.get('balanced_accuracy')))
-            st.metric('Training Rounds', at_fedbn_data.get('num_rounds', 'N/A'))
-            st.metric('Trust Beta', format_metric(at_fedbn_data.get('beta', 0.7)))
-        else:
-            st.info('Run Experiment 04 (AT-FedBN)')
 
-# ============================================================================
-# TAB 4: Trust Mechanism
-# ============================================================================
+def render_table(frame, percent_columns=(), decimal_columns=()):
+    """Render a compact static table that inherits the active dashboard theme."""
+    view = frame.copy()
+    for column in percent_columns:
+        if column in view:
+            view[column] = view[column].map(lambda value: "—" if pd.isna(value) else f"{value:.1%}")
+    for column in decimal_columns:
+        if column in view:
+            view[column] = view[column].map(lambda value: "—" if pd.isna(value) else f"{value:.3f}")
+    markup = view.to_html(index=False, escape=True, classes="data-table", border=0)
+    st.markdown(f'<div class="data-table-wrap">{markup}</div>', unsafe_allow_html=True)
 
-with tab_trust:
-    st.markdown('## Adaptive Trust-Weighted Aggregation')
-    
-    st.markdown("""
-    **Problem**: In federated learning, not all client updates are equally valuable.
-    Some hospitals may have poor data quality, adversarial behavior, or convergence issues.
-    
-    **Solution**: AT-FedBN calculates a trust score for each client based on how well
-    their parameter update aligns with the global training direction (measured by cosine
-    similarity).
-    
-    **Formula**:
-    ```
-    Trust_i = ReLU(CosineSimilarity(ΔW_i, ΔW_global))
-    Weight_i = β · (n_i / N) + (1 - β) · (Trust_i / Σ Trust_j)
-    ```
-    
-    where β={cfg['federated'].get('beta', 0.7)} balances data volume and trust.
-    """)
-    
-    # Trust heatmap
-    trust_heatmap = get_image_path('trust_heatmap.png')
-    if trust_heatmap:
-        st.image(trust_heatmap, use_container_width=True,
-                caption='Trust scores across training rounds')
-    else:
-        st.info('Run Experiment 04 (AT-FedBN) to generate trust visualization.')
-    
-    # Final round weights
-    st.markdown('### Final Round Aggregation Weights')
-    
-    at_fedbn_data = load_json('at_fedbn.json')
-    if at_fedbn_data and 'weights' in at_fedbn_data:
-        final_round = str(at_fedbn_data['num_rounds'])
-        if final_round in at_fedbn_data['weights']:
-            weights_data = at_fedbn_data['weights'][final_round]
-            
-            rows = []
-            for client_id, metrics in weights_data.items():
-                rows.append({
-                    'Client': client_id[:16] + '...',
-                    'Samples': metrics['num_examples'],
-                    'Cosine Similarity': format_metric(metrics['cosine']),
-                    'Volume Weight': format_metric(metrics['volume']),
-                    'Trust Weight': format_metric(metrics['trust']),
-                    'Final Weight': format_metric(metrics['final'])
-                })
-            
-            df_weights = pd.DataFrame(rows)
-            st.dataframe(df_weights, use_container_width=True, hide_index=True)
-            
-            st.caption(f"β = {at_fedbn_data['beta']} | Weights sum to 1.0")
-            
-            st.markdown("""
-            **Interpretation**: Clients with higher trust scores (cosine similarity) and
-            more training samples receive larger aggregation weights. This protects against
-            low-quality or malicious updates while still considering data volume.
-            """)
-    else:
-        st.info('Run Experiment 04 to see trust-based aggregation weights.')
 
-# ============================================================================
-# TAB 5: Model Comparison
-# ============================================================================
+def render_grouped_chart(title, categories, series, maximum=None, value_format="number"):
+    """Draw a responsive, theme-aware grouped bar chart from saved/data-derived values."""
+    categories = list(categories)
+    series = [(str(name), list(values)) for name, values in series]
+    valid = [float(value) for _, values in series for value in values if value is not None and pd.notna(value)]
+    if not categories or not series or not valid:
+        status_message("info", "No saved values are available for this chart.")
+        return
+    maximum = max(1.0, max(valid)) if maximum is None else float(maximum)
+    maximum = maximum or 1.0
+    left, right, top = 145, 28, 56
+    group_height = max(55, 20 * len(series) + 20)
+    height = top + len(categories) * group_height + 40
+    plot_width = 900 - left - right
+    pieces = [f'<div class="chart-card"><svg viewBox="0 0 900 {height}" role="img" aria-label="{html.escape(title)}">',
+              f'<text x="{left}" y="24" class="chart-title">{html.escape(title)}</text>']
+    for tick in range(5):
+        value = maximum * tick / 4
+        x = left + plot_width * tick / 4
+        label = f"{value:.0%}" if value_format == "percent" else f"{value:,.0f}"
+        pieces.extend([f'<line x1="{x:.1f}" y1="{top}" x2="{x:.1f}" y2="{height-28}" class="chart-grid"/>',
+                       f'<text x="{x:.1f}" y="{height-8}" text-anchor="middle" class="chart-muted">{label}</text>'])
+    for index, (name, _) in enumerate(series):
+        x = left + index * 180
+        pieces.extend([f'<rect x="{x}" y="38" width="10" height="10" class="bar-{index % 4}"/>',
+                       f'<text x="{x+15}" y="47" class="chart-muted">{html.escape(name)}</text>'])
+    for cat_index, category in enumerate(categories):
+        y0 = top + cat_index * group_height + 7
+        pieces.append(f'<text x="{left-10}" y="{y0 + len(series)*16/2 + 4:.1f}" text-anchor="end" class="chart-label">{html.escape(str(category))}</text>')
+        for serie_index, (name, values) in enumerate(series):
+            value = values[cat_index] if cat_index < len(values) else None
+            if value is None or pd.isna(value):
+                continue
+            value = max(0.0, float(value))
+            width = plot_width * min(value, maximum) / maximum
+            y = y0 + serie_index * 16
+            display_value = f"{value:.1%}" if value_format == "percent" else f"{value:,.0f}"
+            pieces.append(f'<rect x="{left}" y="{y}" width="{width:.2f}" height="11" rx="3" class="bar-{serie_index % 4}"><title>{html.escape(str(category))} · {html.escape(name)}: {display_value}</title></rect>')
+    pieces.append("</svg></div>")
+    st.markdown("".join(pieces), unsafe_allow_html=True)
 
-with tab_comparison:
-    st.markdown('## Comprehensive Model Comparison')
-    
-    # Bar chart comparison
-    comp_bars = get_image_path('final_comparison_bars.png')
-    if comp_bars:
-        st.image(comp_bars, use_container_width=True)
-    
-    # Detailed metrics table
-    st.markdown('### Detailed Performance Metrics')
-    
-    central = load_json('central_baseline.json')
-    fedbn = load_json('fedbn_only.json')
-    at_fedbn = load_json('at_fedbn.json')
-    
-    if all([central, fedbn, at_fedbn]):
-        rows = []
-        
-        # Centralized
-        rows.append({
-            'Strategy': 'Centralized',
-            'Accuracy': format_metric(central['best']['accuracy']),
-            'Balanced Acc': format_metric(central['best']['balanced_accuracy']),
-            'F1': format_metric(central['best']['f1']),
-            'ROC-AUC': format_metric(central['best']['roc_auc']),
-            'Privacy': '❌ No',
-            'Collaboration': '❌ Requires data sharing'
-        })
-        
-        # FedBN
-        rows.append({
-            'Strategy': 'FedBN',
-            'Accuracy': format_metric(fedbn['local']['average']['accuracy']),
-            'Balanced Acc': format_metric(fedbn['local']['average']['balanced_accuracy']),
-            'F1': format_metric(fedbn['local']['average']['f1']),
-            'ROC-AUC': format_metric(fedbn['local']['average']['roc_auc']),
-            'Privacy': '✅ Local training',
-            'Collaboration': '✅ Federated'
-        })
-        
-        # AT-FedBN
-        rows.append({
-            'Strategy': 'AT-FedBN',
-            'Accuracy': format_metric(at_fedbn['local']['average']['accuracy']),
-            'Balanced Acc': format_metric(at_fedbn['local']['average']['balanced_accuracy']),
-            'F1': format_metric(at_fedbn['local']['average']['f1']),
-            'ROC-AUC': format_metric(at_fedbn['local']['average']['roc_auc']),
-            'Privacy': f"✅ Local + DP (σ={cfg['privacy'].get('noise_scale', 'N/A')})",
-            'Collaboration': '✅ Federated + Trust'
-        })
-        
-        df_comp = pd.DataFrame(rows)
-        st.dataframe(df_comp, use_container_width=True, hide_index=True)
-    
-    # Privacy-Utility Tradeoff
-    st.markdown('### Privacy-Utility Tradeoff')
-    
-    privacy_plot = get_image_path('privacy_utility.png')
-    if privacy_plot:
-        st.image(privacy_plot, use_container_width=True)
-        
-        sigma_sweep = load_json('sigma_sweep.json')
-        if sigma_sweep:
-            st.markdown('#### Differential Privacy Analysis')
-            
-            rows = []
-            for item in sigma_sweep['sweep']:
-                epsilon = item['epsilon']
-                if epsilon is None:
-                    eps_str = '∞ (No DP)'
-                    level = 'None'
-                elif epsilon >= 100:
-                    eps_str = f'{epsilon:,.0f}'
-                    level = '❌ Very Weak'
-                elif epsilon >= 10:
-                    eps_str = f'{epsilon:.1f}'
-                    level = '⚠️ Weak'
+
+def node_flow(title, stages, descriptions, key, zones=None):
+    st.markdown(f'<div class="flow-lane">{html.escape(title)} · select a step</div>', unsafe_allow_html=True)
+    selected_index = st.session_state.get(f"{key}_selected", 0)
+    route = list(range(len(stages)))
+    if len(stages) > 4:
+        route = list(range(4)) + list(range(len(stages) - 1, 3, -1))
+    for row_start in range(0, len(route), 4):
+        row = route[row_start:row_start + 4]
+        widths = []
+        for position in range(len(row)):
+            widths.append(1)
+            if position < len(row) - 1:
+                widths.append(.13)
+        columns = st.columns(widths, gap="small")
+        for position, stage_index in enumerate(row):
+            stage, subtitle = stages[stage_index]
+            zone = zones[stage_index] if zones else "Process"
+            label = f"{stage_index + 1:02d} · {stage}\n{zone} · {subtitle}"
+            with columns[position * 2]:
+                st.button(label, key=f"{key}_node_{stage_index}", use_container_width=True,
+                          type="primary" if stage_index == selected_index else "secondary",
+                          on_click=lambda selected=stage_index, state_key=f"{key}_selected": st.session_state.__setitem__(state_key, selected))
+                if row_start < 4 and position == len(row) - 1 and row_start + 4 < len(route):
+                    st.markdown('<div class="flow-turn">↓</div>', unsafe_allow_html=True)
+            if position < len(row) - 1:
+                if row_start >= 4 and position > 0:
+                    arrow = "←"
+                elif row_start < 4:
+                    arrow = "→"
                 else:
-                    eps_str = f'{epsilon:.2f}'
-                    level = '✅ Moderate' if epsilon > 1 else '✅✅ Strong'
-                
-                rows.append({
-                    'Noise σ': item['sigma'],
-                    'Privacy ε': eps_str,
-                    'Privacy Level': level,
-                    'ROC-AUC': format_metric(item['local']['roc_auc']),
-                    'Accuracy': format_metric(item['local']['accuracy'])
-                })
-            
-            df_privacy = pd.DataFrame(rows)
-            st.dataframe(df_privacy, use_container_width=True, hide_index=True)
-            
-            st.warning(f"""
-            **Current Configuration**: σ={cfg['privacy'].get('noise_scale', 0)} provides {privacy_level.lower()} formal privacy
-            (ε ≈ {epsilon_str}). This configuration prioritizes utility for research
-            demonstration. For deployment with stronger privacy guarantees, increase σ substantially 
-            (e.g., σ=0.5-1.0), accepting some accuracy reduction.
-            """)
-    else:
-        st.info('Run sigma sweep experiment to analyze privacy-utility tradeoff.')
+                    continue
+                with columns[position * 2 + 1]:
+                    st.markdown(f'<div class="flow-arrow">{arrow}</div>', unsafe_allow_html=True)
+    selected_index = st.session_state.get(f"{key}_selected", 0)
+    selected = stages[selected_index][0]
+    explanation = descriptions.get(selected, "")
+    st.markdown(f'<div class="step-detail"><strong>{html.escape(selected)}</strong><p>{html.escape(explanation)}</p></div>', unsafe_allow_html=True)
 
-# ============================================================================
-# TAB 6: Live Demo
-# ============================================================================
 
-with tab_demo:
-    st.markdown('## Interactive Training Demo')
-    
-    st.markdown("""
-    Run a short 2-round AT-FedBN training session on the real hospital data.
-    This demonstrates the complete system: local training, trust calculation,
-    and aggregation.
-    """)
-    
-    col1, col2 = st.columns([1, 3])
-    
-    with col1:
-        beta_demo = st.slider(
-            'Trust Weight (β)',
-            min_value=0.0,
-            max_value=1.0,
-            value=0.7,
-            step=0.1,
-            help='Balance between volume (β=1) and trust (β=0)'
-        )
-        
-        run_demo = st.button('🚀 Run 2-Round Training', type='primary')
-    
-    with col2:
-        st.info(f"""
-        **Configuration**: 2 rounds, β={beta_demo}
-        
-        - β=0.0: Pure trust-based aggregation
-        - β={cfg['federated'].get('beta', 0.7)}: Hybrid ({int(cfg['federated'].get('beta', 0.7)*100)}% volume, {int((1-cfg['federated'].get('beta', 0.7))*100)}% trust)
-        - β=1.0: Pure volume-based (standard FedAvg)
-        
-        Training completes in approximately 20-30 seconds on this dataset.
-        """)
-    
-    if run_demo:
-        with st.spinner('Training in progress...'):
+cfg = read_config()
+data_cfg = cfg.get("data", {})
+model_cfg = cfg.get("model", {})
+training_cfg = cfg.get("training", {})
+fed_cfg = cfg.get("federated", {})
+privacy_cfg = cfg.get("privacy", {})
+num_clients = int(data_cfg.get("num_clients", 0))
+hospital_rows, total_train, total_test = dataset_summary(num_clients)
+
+st.session_state.setdefault("active_page", "Risk Assessment")
+st.session_state.setdefault("ui_theme", "Dark")
+
+
+def choose_page(name):
+    st.session_state["active_page"] = name
+
+
+def toggle_theme():
+    st.session_state["ui_theme"] = "Light" if st.session_state.get("ui_theme") == "Dark" else "Dark"
+
+
+page = st.session_state["active_page"]
+brand_col, risk_col, data_col, method_col, theme_col = st.columns([1.75, 1.2, 1.4, 1.7, 1.15], gap="small")
+with brand_col:
+    st.markdown('<div class="site-brand">AT-FedBN<span>Cardiovascular research</span></div>', unsafe_allow_html=True)
+with risk_col:
+    st.button("Risk Assessment", key="top_nav_risk", type="primary" if page == "Risk Assessment" else "secondary",
+              use_container_width=True, on_click=choose_page, args=("Risk Assessment",))
+with data_col:
+    st.button("Model & Dataset", key="top_nav_data", type="primary" if page == "Model & Dataset" else "secondary",
+              use_container_width=True, on_click=choose_page, args=("Model & Dataset",))
+with method_col:
+    st.button("AT-FedBN Methodology", key="top_nav_method", type="primary" if page == "AT-FedBN Methodology" else "secondary",
+              use_container_width=True, on_click=choose_page, args=("AT-FedBN Methodology",))
+with theme_col:
+    st.button("Switch to light" if theme == "Dark" else "Switch to dark", key="theme_toggle",
+              use_container_width=True, on_click=toggle_theme)
+st.markdown("<div style='height:1px;background:var(--line);margin:.25rem 0 1.3rem'></div>", unsafe_allow_html=True)
+
+
+def model_performance():
+    st.markdown("### Model information")
+    at = read_json("at_fedbn.json")
+    checkpoint_candidates = ["at_fedbn_final.pth", "at_fedbn_ui_live_demo.pth", "fedavg_baseline_final.pth"]
+    checkpoint = next((name for name in checkpoint_candidates if (project_path("outputs/models") / name).is_file()), None)
+    model_label = Path(checkpoint).stem if checkpoint else "No supported checkpoint found"
+    a, b, c, d = st.columns(4)
+    a.metric("Prediction checkpoint", model_label)
+    b.metric("Simulated hospitals", str(num_clients) if num_clients else "Unavailable")
+    c.metric("Saved accuracy", pct(metric_value(at, "local.average", "accuracy")))
+    d.metric("Saved ROC-AUC", pct(metric_value(at, "local.average", "roc_auc")))
+    st.caption("AT-FedBN averages of client-local evaluation results. These experiment metrics are separate from the estimated probability for an individual assessment.")
+
+
+if page == "Risk Assessment":
+    st.markdown("<div class='eyebrow'>Patient assessment</div>", unsafe_allow_html=True)
+    st.title("Cardiovascular Risk Assessment")
+    st.markdown("<p class='subtle'>Enter health indicators to receive a model-based cardiovascular disease prediction.</p>", unsafe_allow_html=True)
+    st.markdown("<div class='notice'><strong>Research prototype:</strong> This tool is for education and research. It has not been clinically validated and is not suitable for diagnosis or treatment decisions.</div>", unsafe_allow_html=True)
+
+    with st.form("risk_assessment_form"):
+        st.markdown("#### Personal information")
+        c1, c2 = st.columns(2)
+        with c1:
+            age = st.number_input("Age (years)", 18, 100, 50, 1)
+        with c2:
+            gender = st.selectbox("Sex recorded in dataset", [1, 2], format_func=lambda x: {1: "Female", 2: "Male"}[x])
+        st.markdown("#### Physical measurements")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            height = st.number_input("Height (cm)", 100, 250, 170, 1)
+        with c2:
+            weight = st.number_input("Weight (kg)", 30, 300, 75, 1)
+        with c3:
+            st.metric("Calculated BMI", f"{weight / ((height / 100) ** 2):.1f}")
+        st.markdown("#### Blood pressure")
+        c1, c2 = st.columns(2)
+        with c1:
+            ap_hi = st.number_input("Systolic pressure (mmHg)", 50, 300, 120, 1)
+        with c2:
+            ap_lo = st.number_input("Diastolic pressure (mmHg)", 30, 200, 80, 1)
+        st.markdown("#### Clinical indicators")
+        c1, c2 = st.columns(2)
+        level = {1: "Normal", 2: "Above normal", 3: "Well above normal"}
+        with c1:
+            cholesterol = st.selectbox("Cholesterol", [1, 2, 3], format_func=level.get)
+        with c2:
+            glucose = st.selectbox("Glucose", [1, 2, 3], format_func=level.get)
+        st.markdown("#### Lifestyle")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            smoke = st.selectbox("Smoking", [0, 1], format_func=lambda x: "No" if x == 0 else "Yes")
+        with c2:
+            alco = st.selectbox("Alcohol consumption", [0, 1], format_func=lambda x: "No" if x == 0 else "Yes")
+        with c3:
+            active = st.selectbox("Physically active", [0, 1], format_func=lambda x: "No" if x == 0 else "Yes")
+        submitted = st.form_submit_button("Assess Cardiovascular Risk", type="primary", use_container_width=True)
+
+    if submitted:
+        if ap_lo >= ap_hi:
+            status_message("error", "Please check the blood pressure values: systolic pressure should be greater than diastolic pressure.")
+        else:
             try:
-                import importlib.util
-                spec = importlib.util.spec_from_file_location(
-                    'exp04', 'experiments/04_full_at_fedbn.py'
-                )
-                exp04 = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(exp04)
-                
-                strategy, results, payload = exp04.run_at_fedbn(
-                    num_rounds=2,
-                    beta=beta_demo,
-                    tag='ui_live_demo'
-                )
-                
-                st.success('✅ Training complete!')
-                
-                # Trust scores per round
-                st.markdown('### Trust Scores by Round')
-                trust_rows = []
-                for round_num, scores in sorted(payload['trust_scores'].items()):
-                    for client_id, score in scores.items():
-                        trust_rows.append({
-                            'Round': round_num,
-                            'Client': client_id[:16] + '...',
-                            'Trust Score': format_metric(score)
-                        })
-                
-                df_trust = pd.DataFrame(trust_rows)
-                st.dataframe(df_trust, use_container_width=True, hide_index=True)
-                
-                # Hospital performance
-                st.markdown('### Final Model Performance by Hospital')
-                hosp_rows = []
-                for hospital, metrics in results['local']['per_hospital'].items():
-                    hosp_rows.append({
-                        'Hospital': hospital,
-                        'ROC-AUC': format_metric(metrics['roc_auc']),
-                        'Balanced Acc': format_metric(metrics['balanced_accuracy']),
-                        'Accuracy': format_metric(metrics['accuracy']),
-                        'Majority Baseline': format_metric(metrics['majority_baseline'])
-                    })
-                
-                df_hosp = pd.DataFrame(hosp_rows)
-                st.dataframe(df_hosp, use_container_width=True, hide_index=True)
-                
-                st.markdown("""
-                **Note**: These results are from a very short 2-round training session
-                for demonstration purposes. Full experiment results (10 rounds) are
-                available in the other tabs.
-                """)
-                
-            except Exception as e:
-                st.error(f'Training failed: {e}')
-                st.exception(e)
-    
-    st.markdown('---')
-    
-    # ========================================================================
-    # LIVE PREDICTION FEATURE
-    # ========================================================================
-    
-    st.markdown('## 🔮 Disease Prediction')
-    
-    st.markdown("""
-    **Enter patient information below to predict cardiovascular disease risk using the trained federated model.**
-    
-    ⚠️ **Disclaimer**: This is an educational research prototype, not a clinically validated diagnostic tool.
-    Do not use for actual medical decisions.
-    """)
-    
-    # Load model and create prediction form
-    prediction_col1, prediction_col2 = st.columns([2, 1])
-    
-    with prediction_col1:
-        st.markdown('### Patient Information')
-        
-        # Create input form
-        with st.form("prediction_form"):
-            # Row 1: Demographics
-            demo_col1, demo_col2, demo_col3 = st.columns(3)
-            with demo_col1:
-                age_input = st.number_input(
-                    'Age (years)',
-                    min_value=18,
-                    max_value=100,
-                    value=50,
-                    step=1,
-                    help='Patient age in years'
-                )
-            with demo_col2:
-                gender_input = st.selectbox(
-                    'Gender',
-                    options=[1, 2],
-                    format_func=lambda x: 'Female' if x == 1 else 'Male',
-                    help='Biological sex (1=Female, 2=Male)'
-                )
-            with demo_col3:
-                height_input = st.number_input(
-                    'Height (cm)',
-                    min_value=100,
-                    max_value=250,
-                    value=170,
-                    step=1,
-                    help='Height in centimeters'
-                )
-            
-            # Row 2: Physical measurements
-            phys_col1, phys_col2 = st.columns(2)
-            with phys_col1:
-                weight_input = st.number_input(
-                    'Weight (kg)',
-                    min_value=30,
-                    max_value=300,
-                    value=75,
-                    step=1,
-                    help='Weight in kilograms'
-                )
-            with phys_col2:
-                bmi_calc = weight_input / ((height_input / 100) ** 2)
-                st.metric('BMI (calculated)', f'{bmi_calc:.1f}')
-            
-            # Row 3: Blood Pressure
-            st.markdown('**Blood Pressure**')
-            bp_col1, bp_col2 = st.columns(2)
-            with bp_col1:
-                ap_hi_input = st.number_input(
-                    'Systolic BP (mmHg)',
-                    min_value=50,
-                    max_value=300,
-                    value=120,
-                    step=5,
-                    help='Systolic blood pressure (upper number)'
-                )
-            with bp_col2:
-                ap_lo_input = st.number_input(
-                    'Diastolic BP (mmHg)',
-                    min_value=30,
-                    max_value=200,
-                    value=80,
-                    step=5,
-                    help='Diastolic blood pressure (lower number)'
-                )
-            
-            # Row 4: Lab results
-            st.markdown('**Lab Results**')
-            lab_col1, lab_col2 = st.columns(2)
-            with lab_col1:
-                cholesterol_input = st.selectbox(
-                    'Cholesterol Level',
-                    options=[1, 2, 3],
-                    format_func=lambda x: {1: 'Normal', 2: 'Above Normal', 3: 'Well Above Normal'}[x],
-                    help='1=Normal, 2=Above Normal, 3=Well Above Normal'
-                )
-            with lab_col2:
-                glucose_input = st.selectbox(
-                    'Glucose Level',
-                    options=[1, 2, 3],
-                    format_func=lambda x: {1: 'Normal', 2: 'Above Normal', 3: 'Well Above Normal'}[x],
-                    help='1=Normal, 2=Above Normal, 3=Well Above Normal'
-                )
-            
-            # Row 5: Lifestyle factors
-            st.markdown('**Lifestyle Factors**')
-            lifestyle_col1, lifestyle_col2, lifestyle_col3 = st.columns(3)
-            with lifestyle_col1:
-                smoke_input = st.selectbox(
-                    'Smoking',
-                    options=[0, 1],
-                    format_func=lambda x: 'No' if x == 0 else 'Yes',
-                    help='Current smoking status'
-                )
-            with lifestyle_col2:
-                alco_input = st.selectbox(
-                    'Alcohol',
-                    options=[0, 1],
-                    format_func=lambda x: 'No' if x == 0 else 'Yes',
-                    help='Regular alcohol consumption'
-                )
-            with lifestyle_col3:
-                active_input = st.selectbox(
-                    'Physical Activity',
-                    options=[0, 1],
-                    format_func=lambda x: 'No' if x == 0 else 'Yes',
-                    help='Regular physical activity'
-                )
-            
-            # Submit button
-            st.markdown('')
-            predict_button = st.form_submit_button('🔮 Predict Disease Risk', type='primary', use_container_width=True)
-    
-    with prediction_col2:
-        st.markdown('### Model Information')
-        st.info("""
-        **Model**: AT-FedBN CardioMLP
-        
-        **Architecture**:
-        - Input: 11 features
-        - Hidden: 64 → 32 neurons
-        - BatchNorm layers
-        - Dropout: 0.2
-        
-        **Training**:
-        - Federated across hospitals
-        - Privacy-preserving (local data)
-        - Differential privacy optional
-        
-        **Threshold**: 0.5
-        (predictions ≥ 0.5 = disease)
-        """)
-    
-    # Process prediction when button is clicked
-    if predict_button:
-        with st.spinner('Running prediction...'):
-            try:
-                # Import required modules
-                import torch
                 import numpy as np
-                import pandas as pd
-                from pathlib import Path
-                import sys
-                
-                # Ensure project root is in path
-                project_root = Path(__file__).resolve().parents[1]
-                if str(project_root) not in sys.path:
-                    sys.path.insert(0, str(project_root))
-                
+                import torch
                 from src.models.cardio_mlp import CardioMLP
                 from src.utils.scaler_utils import transform_raw_input
-                
-                # Collect input features in correct order
-                feature_names = ['age', 'gender', 'height', 'weight', 'ap_hi', 'ap_lo', 
-                               'cholesterol', 'gluc', 'smoke', 'alco', 'active']
-                
-                input_data = {
-                    'age': age_input,
-                    'gender': gender_input,
-                    'height': height_input,
-                    'weight': weight_input,
-                    'ap_hi': ap_hi_input,
-                    'ap_lo': ap_lo_input,
-                    'cholesterol': cholesterol_input,
-                    'gluc': glucose_input,
-                    'smoke': smoke_input,
-                    'alco': alco_input,
-                    'active': active_input
-                }
-                
-                # Display input summary
-                st.markdown('### Input Summary')
-                input_df = pd.DataFrame([input_data])
-                st.dataframe(input_df, use_container_width=True, hide_index=True)
-                
-                # Create feature array in correct order
-                features = np.array([[input_data[f] for f in feature_names]], dtype=np.float32)
-                
-                # Scale the raw input using the scaler utility
-                try:
-                    features_scaled = transform_raw_input(
-                        features,
-                        use_hospital_scaler=False,  # Use default stats (hospital data is already scaled)
-                        num_hospitals=cfg['data']['num_clients']
-                    )
-                except Exception as e:
-                    st.error(f'❌ Error scaling input features: {e}')
-                    st.stop()
-                
-                # Load the trained model
-                model_paths = [
-                    project_root / 'outputs' / 'models' / 'at_fedbn_final.pth',
-                    project_root / 'outputs' / 'models' / 'at_fedbn_ui_live_demo.pth',
-                    project_root / 'outputs' / 'models' / 'fedavg_baseline_final.pth',
-                ]
-                
-                model_path = None
-                model_name = None
-                for path in model_paths:
-                    if path.exists():
-                        model_path = path
-                        model_name = path.stem
-                        break
-                
-                if model_path is None:
-                    st.error('❌ No trained model checkpoint found.')
-                    st.info("""
-                    **Missing Model Checkpoint**
-                    
-                    To use the prediction feature, you need to run one of the training experiments first:
-                    - `python experiments/04_full_at_fedbn.py` (recommended)
-                    - `python experiments/03_fedbn_only.py`
-                    - `python experiments/02_fedavg_baseline.py`
-                    
-                    This will generate a trained model checkpoint in `outputs/models/`.
-                    """)
-                    st.stop()
-                
-                # Load model
-                st.info(f'Using model: **{model_name}**')
-                
-                model = CardioMLP(
-                    input_dim=cfg['model']['input_dim'],
-                    hidden_dims=tuple(cfg['model']['hidden_dims']),
-                    dropout=cfg['model']['dropout']
-                )
-                
-                checkpoint = torch.load(model_path, map_location='cpu')
-                
-                # Handle different checkpoint formats
-                if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
-                    model.load_state_dict(checkpoint['model_state_dict'])
-                elif isinstance(checkpoint, dict) and any(k.startswith('fc') or k.startswith('bn') for k in checkpoint.keys()):
-                    model.load_state_dict(checkpoint)
+
+                features = np.asarray([[age, gender, height, weight, ap_hi, ap_lo, cholesterol, glucose, smoke, alco, active]], dtype=np.float32)
+                scaled = transform_raw_input(features, use_hospital_scaler=False, num_hospitals=num_clients)
+                candidates = [project_path("outputs/models") / name for name in (
+                    "at_fedbn_final.pth", "at_fedbn_ui_live_demo.pth", "fedavg_baseline_final.pth")]
+                checkpoint_path = next((p for p in candidates if p.is_file()), None)
+                if checkpoint_path is None:
+                    status_message("error", "No prediction checkpoint is available. The dashboard needs a trained checkpoint in outputs/models/.")
                 else:
-                    st.error(f'❌ Unrecognized checkpoint format in {model_path}')
-                    st.stop()
-                
-                model.eval()
-                
-                # Run inference
-                with torch.no_grad():
-                    input_tensor = torch.from_numpy(features_scaled).float()
-                    logit = model(input_tensor)
-                    probability = torch.sigmoid(logit).item()
-                    prediction = 1 if probability >= 0.5 else 0
-                
-                # Display results
-                st.markdown('---')
-                st.markdown('## 🎯 Prediction Results')
-                
-                # Main prediction display
-                if prediction == 1:
-                    st.error('### ⚠️ **DISEASE DETECTED**')
-                    st.markdown('**The model predicts a HIGH RISK of cardiovascular disease.**')
-                else:
-                    st.success('### ✅ **NO DISEASE DETECTED**')
-                    st.markdown('**The model predicts a LOW RISK of cardiovascular disease.**')
-                
-                # Probability display
-                result_col1, result_col2 = st.columns(2)
-                
-                with result_col1:
-                    st.metric(
-                        'Disease Probability',
-                        f'{probability * 100:.1f}%',
-                        delta=None,
-                        help='Model confidence in positive disease prediction'
-                    )
-                
-                with result_col2:
-                    st.metric(
-                        'Classification Threshold',
-                        '50.0%',
-                        delta=None,
-                        help='Predictions ≥ 50% are classified as disease'
-                    )
-                
-                # Visual probability bar
-                st.markdown('### Confidence Visualization')
-                st.progress(probability, text=f'Disease Probability: {probability*100:.1f}%')
-                
-                # Interpretation guide
-                st.markdown('### Interpretation Guide')
-                if probability >= 0.8:
-                    risk_level = '🔴 **Very High Risk**'
-                    recommendation = 'Immediate medical consultation strongly recommended.'
-                elif probability >= 0.6:
-                    risk_level = '🟠 **High Risk**'
-                    recommendation = 'Medical consultation recommended. Monitor cardiovascular health closely.'
-                elif probability >= 0.4:
-                    risk_level = '🟡 **Moderate Risk**'
-                    recommendation = 'Consider lifestyle modifications and regular check-ups.'
-                elif probability >= 0.2:
-                    risk_level = '🟢 **Low Risk**'
-                    recommendation = 'Maintain healthy lifestyle. Regular preventive care advised.'
-                else:
-                    risk_level = '🟢 **Very Low Risk**'
-                    recommendation = 'Continue healthy habits. Routine health monitoring sufficient.'
-                
-                st.markdown(f'**Risk Level**: {risk_level}')
-                st.markdown(f'**Recommendation**: {recommendation}')
-                
-                # Important notes
-                st.markdown('---')
-                st.warning("""
-                **Important Notes**:
-                - This prediction is based on a research model trained on historical data
-                - It should NOT replace professional medical diagnosis
-                - Always consult healthcare professionals for medical decisions
-                - Model accuracy on test data: ~73% (see Training Results tab)
-                - Individual predictions may vary in accuracy
-                """)
-                
-                # Feature importance (simple heuristic)
-                st.markdown('### Input Feature Summary')
-                risk_factors = []
-                if ap_hi_input >= 140 or ap_lo_input >= 90:
-                    risk_factors.append('⚠️ High blood pressure detected')
-                if cholesterol_input >= 2:
-                    risk_factors.append('⚠️ Elevated cholesterol')
-                if glucose_input >= 2:
-                    risk_factors.append('⚠️ Elevated glucose')
-                if smoke_input == 1:
-                    risk_factors.append('⚠️ Smoking habit')
-                if bmi_calc >= 30:
-                    risk_factors.append('⚠️ High BMI (≥30)')
-                if active_input == 0:
-                    risk_factors.append('⚠️ Sedentary lifestyle')
-                if age_input >= 60:
-                    risk_factors.append('⚠️ Advanced age (≥60)')
-                
-                if risk_factors:
-                    st.markdown('**Risk Factors Present**:')
-                    for factor in risk_factors:
-                        st.markdown(f'- {factor}')
-                else:
-                    st.markdown('✅ No major risk factors detected in input data')
-                
-            except Exception as e:
-                st.error(f'❌ Prediction failed: {str(e)}')
-                st.exception(e)
-                st.info("""
-                **Troubleshooting**:
-                1. Ensure experiments have been run to generate model checkpoints
-                2. Check that hospital data exists in `data/processed/`
-                3. Verify model architecture matches config.yaml
-                """)
-    
-    st.markdown('---')
-    st.markdown('### Experiment Execution')
-    st.markdown("""
-    To run the complete experiment suite outside this dashboard:
-    
-    ```bash
-    # Individual experiments
-    python experiments/01_central_baseline.py     # Centralized upper bound
-    python experiments/03_fedbn_only.py           # FedBN baseline
-    python experiments/04_full_at_fedbn.py        # Full AT-FedBN
-    
-    # Generate comparisons and visualizations
-    python experiments/compare_all.py
-    
-    # Parameter sweeps
-    python experiments/05_sweep_experiments.py --sweep sigma
-    python experiments/05_sweep_experiments.py --sweep beta
-    python experiments/05_sweep_experiments.py --sweep alpha
-    ```
-    """)
+                    model = CardioMLP(input_dim=model_cfg.get("input_dim", 11),
+                                      hidden_dims=tuple(model_cfg.get("hidden_dims", [64, 32])),
+                                      dropout=model_cfg.get("dropout", 0.2))
+                    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+                    if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+                        model.load_state_dict(checkpoint["model_state_dict"])
+                    elif isinstance(checkpoint, dict) and any(k.startswith(("fc", "bn")) for k in checkpoint):
+                        model.load_state_dict(checkpoint)
+                    else:
+                        raise ValueError("The selected checkpoint has an unsupported format.")
+                    model.eval()
+                    with torch.no_grad():
+                        probability = float(torch.sigmoid(model(torch.from_numpy(np.asarray(scaled, dtype=np.float32)))).item())
+                    threshold = 0.5
+                    st.session_state["last_prediction"] = {"probability": probability,
+                        "prediction": int(probability >= threshold), "threshold": threshold,
+                        "checkpoint": checkpoint_path.stem}
+            except Exception as exc:
+                status_message("error", f"Prediction could not be completed: {exc}")
 
-# ============================================================================
-# Footer
-# ============================================================================
+    result = st.session_state.get("last_prediction")
+    if result:
+        st.markdown("---")
+        st.markdown("### Assessment result")
+        positive = result["prediction"] == 1
+        outcome = "Model predicts cardiovascular disease" if positive else "Model does not predict cardiovascular disease"
+        probability = result["probability"]
+        st.markdown(f"""<div class="result-card"><strong>{outcome}</strong>
+<p>Estimated model probability <strong>{probability:.1%}</strong></p>
+<div class="prob-track" role="img" aria-label="Estimated model probability {probability:.1%}"><div class="prob-fill" style="width:{probability * 100:.2f}%"></div></div>
+<small>Classification threshold: {result['threshold']:.0%}. A model output, not a clinically calibrated risk estimate or diagnosis.</small></div>""", unsafe_allow_html=True)
+        st.caption(f"Prediction checkpoint: {result['checkpoint']}")
+    st.markdown("---")
+    model_performance()
+    st.caption("Discuss health concerns and decisions with a qualified healthcare professional. This prototype does not provide medical advice.")
 
-st.markdown('---')
 
-col1, col2, col3 = st.columns(3)
+elif page == "Model & Dataset":
+    st.markdown("<div class='eyebrow'>How the system is built</div>", unsafe_allow_html=True)
+    st.title("Model & Dataset")
+    st.markdown("<p class='subtle'>A shared prediction network is trained across simulated hospital partitions; local Batch Normalization values remain client-specific.</p>", unsafe_allow_html=True)
 
-with col1:
-    st.markdown('**Project Information**')
-    st.caption('AT-FedBN Research Project')
-    st.caption('Federated Learning + Differential Privacy')
+    st.markdown("### Prediction and training pipeline")
+    stages = [("Source", "Cardiovascular records"), ("Preparation", "Clean, order and standardize features"),
+              ("Local", "Partition records by simulated hospital"), ("Client", "Train local model on-site"),
+              ("Exchange", "Shared model parameters / updates"), ("Server", "Aggregate shared parameters"),
+              ("Shared model", "Broadcast updated shared weights"), ("Inference", "Scale inputs, sigmoid logit")]
+    descriptions = {
+        "Source": "The project uses the cardiovascular dataset stored at data/raw/cardio_train.csv. Patient-level records are not displayed in this dashboard.",
+        "Preparation": "The preprocessing pipeline removes the target from the feature matrix and fits StandardScaler on training data. The existing prediction utility applies its documented raw-feature normalization.",
+        "Local": f"Training partitions are configured for {num_clients} simulated clients. The configured Dirichlet alpha is {data_cfg.get('dirichlet_alpha', 'unavailable')}.",
+        "Client": f"Each client runs local training for {training_cfg.get('local_epochs', 'unavailable')} epochs per round on its partition.",
+        "Exchange": "For FedBN, non-BatchNorm trainable parameters are shared. Raw records and local BatchNorm parameters/statistics are omitted.",
+        "Server": "The server aggregates shared parameters according to the selected strategy. AT-FedBN combines sample-volume and update-alignment weights.",
+        "Shared model": "The server returns updated shared parameters; each client merges them while preserving its local BatchNorm state.",
+        "Inference": "The app orders 11 inputs as age, gender, height, weight, systolic/diastolic pressure, cholesterol, glucose, smoking, alcohol and activity; it applies transform_raw_input, sigmoid, then the existing 0.5 threshold."
+    }
+    node_flow("Training and inference · client to server and back", stages, descriptions,
+              "model_pipeline_step", ["Source", "Preparation", "Client", "Client", "Transfer", "Server", "Return", "Inference"])
 
-with col2:
-    st.markdown('**Dataset**')
-    st.caption('Cardiovascular Disease Dataset')
-    total_dataset_size = dataset_stats['total_train'] + dataset_stats['total_test']
-    if total_dataset_size > 0:
-        st.caption(f'{total_dataset_size:,} patient records across {dataset_stats["num_hospitals"]} hospitals')
+    st.markdown("### Prediction network")
+    hidden = model_cfg.get("hidden_dims", [64, 32])
+    architecture = [
+        ("Input", f"{model_cfg.get('input_dim', 11)} ordered features"),
+        ("Dense block 1", f"Linear {hidden[0]} · BatchNorm · ReLU · Dropout {model_cfg.get('dropout', 0.2)}"),
+        ("Dense block 2", f"Linear {hidden[1]} · BatchNorm · ReLU · Dropout {model_cfg.get('dropout', 0.2)}"),
+        ("Output", "Linear 1 logit · sigmoid · threshold 0.5"),
+    ]
+    architecture_details = {
+        "Input": "The network receives the ordered, standardized 11 patient features used by the prediction pipeline.",
+        "Dense block 1": "The first learned projection has the configured width. Batch Normalization, ReLU and Dropout follow the linear layer.",
+        "Dense block 2": "A second linear block narrows the representation and uses the same BatchNorm, ReLU and Dropout pattern.",
+        "Output": "The model returns one raw logit. Inference applies sigmoid, then the existing 0.5 decision threshold.",
+    }
+    node_flow("CardioMLP · select a layer for details", architecture, architecture_details,
+              "architecture_step", ["Input", "Shared", "Shared", "Prediction"])
+    with st.expander("What the layers do"):
+        st.write("Linear layers combine input signals. Batch Normalization stabilizes activations; ReLU adds nonlinearity; Dropout reduces co-adaptation during training. The output is a raw logit trained with BCEWithLogitsLoss, converted to a probability with sigmoid during evaluation.")
+
+    st.markdown("### Dataset overview")
+    if hospital_rows:
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Training records", f"{total_train:,}")
+        m2.metric("Test records", f"{total_test:,}")
+        m3.metric("Model features", str(model_cfg.get("input_dim", 11)))
+        train_df, test_df = pd.read_csv(project_path("data/processed/train.csv")), pd.read_csv(project_path("data/processed/test.csv"))
+        hospital = pd.DataFrame(hospital_rows).set_index("Hospital")
+        chart_view = button_choices(["Target classes", "Hospital samples", "Positive rate"], "dataset_chart_view")
+        if chart_view == "Target classes" and "cardio" in train_df and "cardio" in test_df:
+            negative = [(train_df.cardio == 0).sum(), (test_df.cardio == 0).sum()]
+            positive = [(train_df.cardio == 1).sum(), (test_df.cardio == 1).sum()]
+            render_grouped_chart("Records by target class · cardio", ["Negative (0)", "Positive (1)"],
+                                 [("Training", [negative[0], positive[0]]), ("Test", [negative[1], positive[1]])])
+        elif chart_view == "Hospital samples":
+            render_grouped_chart("Samples by hospital", hospital.index, [
+                ("Training", hospital["Training samples"].tolist()), ("Test", hospital["Test samples"].tolist())])
+        elif chart_view == "Positive rate":
+            render_grouped_chart("Positive target rate", hospital.index, [
+                ("Training", hospital["Training positive rate"].tolist()), ("Test", hospital["Test positive rate"].tolist())],
+                maximum=1, value_format="percent")
+        elif chart_view == "Target classes":
+            status_message("info", "Target class counts are unavailable in the combined train/test data.")
+        render_table(hospital.reset_index(), percent_columns=("Training positive rate", "Test positive rate"))
+        st.caption(f"The processed dataset contains {total_train + total_test:,} split records across {len(hospital_rows)} available hospital partitions. Client distributions differ; the configured Dirichlet partition parameter α={data_cfg.get('dirichlet_alpha', 'unavailable')} controls partition heterogeneity.")
     else:
-        st.caption(f'Configured for {cfg["data"]["num_clients"]} hospitals')
+        status_message("info", "Processed hospital train/test CSVs are unavailable, so dataset-derived sample and class charts cannot be shown.")
+    st.caption("Dataset provenance: project data files identify the source as the cardiovascular disease dataset; no patient records are exposed here.")
 
-with col3:
-    st.markdown('**Quick Links**')
-    st.caption('[Run Tests](command:python -m pytest tests/)')
-    st.caption('[View Code](file:../src/)')
 
-st.caption('Dashboard built with Streamlit | Data remains local to hospitals')
+else:
+    st.markdown("<div class='eyebrow'>Federated learning approach</div>", unsafe_allow_html=True)
+    st.title("AT-FedBN Methodology")
+    st.markdown("<p class='subtle'>Hospitals train collaboratively while retaining records and Batch Normalization state locally. AT-FedBN adjusts shared-parameter aggregation using update alignment and data volume.</p>", unsafe_allow_html=True)
+    at = read_json("at_fedbn.json")
+    beta = float((at or {}).get("beta", fed_cfg.get("beta", 0.7)))
+
+    st.markdown("### One training round")
+    stages = [("Hospital", "Records remain local"), ("Local training", "Update model on local data"),
+              ("Split", "Keep BN local; select shared weights"), ("Optional noise", "Clip/noise shared update"),
+              ("Server", "Compare update directions"), ("Trust", "ReLU cosine alignment"),
+              ("Aggregate", "Blend trust + data volume"), ("Broadcast", "Return shared weights")]
+    descriptions = {
+        "Hospital": "Each simulated client keeps its own partition of patient records. Raw records are not transmitted in the federated training flow.",
+        "Local training": "Clients train the CardioMLP locally for the configured number of epochs.",
+        "Split": "The client code shares non-BatchNorm trainable parameters. BatchNorm affine parameters and running statistics remain local.",
+        "Optional noise": f"The configured client routine clips the aggregated shared weight update and adds Gaussian noise (enabled={privacy_cfg.get('enabled', False)}, clip norm={privacy_cfg.get('clip_norm', 'unavailable')}, noise scale={privacy_cfg.get('noise_scale', 'unavailable')}). This is update-level noise, not per-example DP-SGD.",
+        "Server": "The server compares each shared client delta with the volume-weighted reference update for that round.",
+        "Trust": "The score is max(trust_floor, cosine similarity). It measures directional alignment with the reference update, not data quality or trustworthiness.",
+        "Aggregate": f"Final weight = β × volume share + (1−β) × normalized trust share, with β={beta:.2f}. If all trust scores are approximately zero, the implementation falls back to volume weights; final weights are normalized.",
+        "Broadcast": "Only aggregated shared weights return to the clients; each client preserves its own BatchNorm state before the next round."
+    }
+    node_flow("One round · client operations then server aggregation", stages, descriptions,
+              "method_pipeline_step", ["Client", "Client", "Client", "Client", "Server", "Server", "Server", "Return"])
+
+    st.markdown("### Trust and aggregation")
+    st.code("trustᵢ = max(trust_floor, cosine_similarity(ΔWᵢ, ΔW_reference))\nweightᵢ = β · (nᵢ / N) + (1 − β) · normalized_trustᵢ", language="text")
+    st.caption("ΔWᵢ is a client's shared-parameter update, ΔW_reference is the volume-weighted update direction, and nᵢ/N is its share of participating training samples. β controls the blend. Trust scores describe update alignment only; they do not establish client reliability.")
+
+    weights = (at or {}).get("weights", {}) if at else {}
+    trust_history = (at or {}).get("trust_scores", {}) if at else {}
+    if trust_history:
+        trust_rounds = sorted(trust_history, key=lambda value: int(value))
+        client_ids = sorted({client_id for values in trust_history.values() for client_id in values})
+        if len(trust_rounds) > 1 and client_ids:
+            st.markdown("### Trust history")
+            client_labels = [f"Client {index + 1}" for index in range(len(client_ids))]
+            selected_client = button_choices(client_labels, "trust_history_client", columns_per_row=3)
+            client_id = client_ids[client_labels.index(selected_client)]
+            history_values = [trust_history[round_id].get(client_id) for round_id in trust_rounds]
+            render_grouped_chart(f"Update-alignment trust · {selected_client}",
+                                 [f"Round {round_id}" for round_id in trust_rounds],
+                                 [(selected_client, history_values)], maximum=1, value_format="percent")
+            st.caption("Saved per-round trust scores are shown for the selected simulated client. The score measures update alignment, not data quality.")
+
+    if weights:
+        rounds = sorted(weights, key=lambda x: int(x))
+        if len(rounds) > 1:
+            selected = st.selectbox("Inspect aggregation round", rounds, index=len(rounds) - 1, format_func=lambda x: f"Round {x}")
+        else:
+            selected = rounds[-1]
+            st.caption(f"Saved aggregation weights · Round {selected}")
+        round_data = weights[selected]
+        rows = []
+        for idx, (client, item) in enumerate(round_data.items(), 1):
+            cosine = item.get("cosine", item.get("trust_score"))
+            rows.append({"Hospital": f"Client {idx}", "Cosine alignment": cosine,
+                         "Trust score (ReLU cosine)": max(float(fed_cfg.get("trust_floor", 0.0)), cosine) if cosine is not None else None,
+                         "Volume weight": item.get("volume"), "Trust weight": item.get("trust"),
+                         "Final aggregation weight": item.get("final")})
+        chart = pd.DataFrame(rows).set_index("Hospital")
+        st.markdown("**Saved client scores and weights**")
+        render_grouped_chart("Trust and final aggregation weight", chart.index,
+                             [("Trust score", chart["Trust score (ReLU cosine)"].tolist()),
+                              ("Final weight", chart["Final aggregation weight"].tolist())],
+                             maximum=1, value_format="percent")
+        render_table(chart.reset_index(), decimal_columns=("Cosine alignment", "Trust score (ReLU cosine)",
+                     "Volume weight", "Trust weight", "Final aggregation weight"))
+        st.caption(f"Round {selected} values are read from outputs/results/at_fedbn.json. Raw cosine alignment is clipped by the configured trust floor to obtain the trust score; aggregation uses normalized trust weights. Client sample counts and volume weights are zero in the saved round where recorded, and are shown as stored.")
+    else:
+        status_message("info", "No saved AT-FedBN client aggregation weights are available.")
+
+    st.markdown("### What remains local")
+    st.markdown("**Shared:** Linear-layer trainable parameters are exchanged and aggregated.  **Local:** `bn1` and `bn2` parameters and running statistics remain on each client. Local normalization lets the model adapt to differing hospital activation distributions.")
+
+    st.markdown("### Privacy scope")
+    status_message("warning", "The code's optional noise mechanism clips and perturbs the full shared weight update after local training. This is not per-example gradient DP-SGD, and the repository's simplified epsilon estimate is not a rigorous privacy accountant; no epsilon guarantee is presented here. Federated learning and update noise do not eliminate all information leakage. This simulated research prototype is not a production healthcare deployment.")
+
+    st.markdown("### Saved experiment comparison")
+    experiments = [
+        ("Centralized", "central_baseline.json", "best", "Test-set best checkpoint metrics"),
+        ("FedBN", "fedbn_only.json", "local.average", "Average client-local evaluation"),
+        ("AT-FedBN", "at_fedbn.json", "local.average", "Average client-local evaluation"),
+    ]
+    comparison = []
+    for name, filename, loc, context in experiments:
+        result = read_json(filename)
+        if result:
+            comparison.append({"Model": name, "Evaluation context": context,
+                "Accuracy": metric_value(result, loc, "accuracy"),
+                "Balanced accuracy": metric_value(result, loc, "balanced_accuracy"),
+                "Precision": metric_value(result, loc, "precision"),
+                "Recall / sensitivity": metric_value(result, loc, "recall"),
+                "F1": metric_value(result, loc, "f1"),
+                "ROC-AUC": metric_value(result, loc, "roc_auc")})
+    if comparison:
+        comp = pd.DataFrame(comparison).set_index("Model")
+        metric_columns = ["Accuracy", "Balanced accuracy", "Precision", "Recall / sensitivity", "F1", "ROC-AUC"]
+        available_metrics = [column for column in metric_columns if comp[column].notna().any()]
+        if available_metrics:
+            chosen_metric = button_choices(available_metrics, "comparison_metric")
+            render_grouped_chart(f"{chosen_metric} by model", [chosen_metric],
+                [(name, [comp.loc[name, chosen_metric]]) for name in comp.index],
+                maximum=1, value_format="percent")
+        render_table(comp.reset_index(), decimal_columns=metric_columns)
+        st.caption("Results are displayed in each experiment's saved evaluation context. Centralized test-set results and averages of client-local evaluations are not identical evaluation procedures; interpret comparisons accordingly.")
+    else:
+        status_message("info", "No comparable saved model metrics are available.")
